@@ -44,6 +44,20 @@
 
 <br/>
 
+<!-- FORK-NOTICE-BEGIN -->
+> [!NOTE]
+> **This repository is a fork** (`cyberofficial/DeepSeek-Reasonix`) of
+> [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) (upstream, `main-v2`).
+> It exists to develop the **scheduling / loop feature set** as a dedicated initiative:
+> the session-scoped `/loop` command, cron tools (`cron_create`, `cron_list`,
+> `cron_delete`, `schedule_wakeup`), mid-turn steering of scheduled prompts,
+> per-directory scheduled-task persistence (`<workspace>/.reasonix/scheduled-tasks.json`),
+> and the `NEXT JOB` status-bar indicator. Everything upstream offers remains available;
+> this fork adds the scheduler work on top and tracks upstream `main-v2` continuously.
+<!-- FORK-NOTICE-END -->
+
+<br/>
+
 > [!IMPORTANT]
 > **Community · 加入社区** — bilingual Discord for setup help (`#help` / `#求助`), workflow showcases, and feature ideas. → **<https://discord.gg/XF78rEME2D>**
 
