@@ -30,6 +30,7 @@ func TestSessionSidecarLayout(t *testing.T) {
 		{"checkpoint", SessionCheckpointDir(p), "/home/u/.reasonix/sessions/abc.ckpt"},
 		{"jobs", SessionJobsDir(p), "/home/u/.reasonix/sessions/abc.jobs"},
 		{"cleanup-pending", SessionCleanupPending(p), "/home/u/.reasonix/sessions/abc.cleanup-pending.json"},
+		{"context", SessionContext(p), "/home/u/.reasonix/sessions/abc.context.json"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -55,6 +56,7 @@ func TestSessionSidecarEmptyPath(t *testing.T) {
 		{"checkpoint", SessionCheckpointDir},
 		{"jobs", SessionJobsDir},
 		{"cleanup-pending", SessionCleanupPending},
+		{"context", SessionContext},
 	} {
 		if got := fn.f(""); got != "" {
 			t.Errorf("%s(\"\") = %q, want empty", fn.name, got)
@@ -162,6 +164,7 @@ func TestSessionSidecarFiles(t *testing.T) {
 		"/home/u/.reasonix/sessions/abc.event-index.json",
 		"/home/u/.reasonix/sessions/abc.conflicts.jsonl",
 		"/home/u/.reasonix/sessions/abc.recovery.json",
+		"/home/u/.reasonix/sessions/abc.context.json",
 	}
 	// The /loop scheduled-task file must NOT be session-owned: crons belong to
 	// the working directory and survive /new, /clear, and session deletion.

@@ -388,7 +388,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 		// Keep reasoning_content on the assistant turn for display and session
 		// archive. Most OpenAI-compatible backends do not replay it; providers
 		// with an explicit round-trip contract retain the raw provider text.
-		calls = a.withPreviewFileDiffs(calls)
+		calls = a.withPreviewFileDiffs(ctx, calls)
 		a.session.Add(provider.Message{
 			Role:               provider.RoleAssistant,
 			Content:            text,
@@ -443,10 +443,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		before := provider.RequestAttemptCount(ctx)
 		result := a.streamWithFrozen(ctx, turn, sink, &frozen, attemptID)
 		after := provider.RequestAttemptCount(ctx)
-		delta := after - before
-		if delta < 0 {
-			delta = 0
-		}
+		delta := max(after-before, 0)
 		// httpRequests=0 means the provider does not use SendWithRetry
 		// (extension/custom), or it failed before issuing an HTTP request.
 		// Only overwrite RequestCount when the built-in counter observed POSTs;
@@ -589,13 +586,7 @@ var streamRetrySleep = sleepStreamRetryBackoff
 // Returns false when ctx is cancelled during the wait.
 func sleepStreamRetryBackoff(ctx context.Context, attempt int) bool {
 	// attempt is 1-based for the failed attempt about to be retried.
-	shift := attempt - 1
-	if shift < 0 {
-		shift = 0
-	}
-	if shift > 4 {
-		shift = 4
-	}
+	shift := min(max(attempt-1, 0), 4)
 	base := time.Duration(1<<shift) * 500 * time.Millisecond
 	jitter := time.Duration(rand.Intn(250)) * time.Millisecond
 	timer := time.NewTimer(base + jitter)
@@ -934,7 +925,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *runLoopState, te
 		// "still thinking after the task is done" symptom), so honour the
 		// stop when reasoning carried the substance of the answer and treat
 		// the turn as a final answer instead of retrying.
-		if !reasoningOnlyFinishHonoured(a.prov, usage, reasoning) {
+		if a.requireVisibleFinal || !reasoningOnlyFinishHonoured(a.prov, usage, reasoning) {
 			state.emptyFinalBlocks++
 			if state.emptyFinalBlocks >= maxEmptyFinalBlocks {
 				return false, fmt.Errorf("model finished without a visible final answer %d times", state.emptyFinalBlocks)

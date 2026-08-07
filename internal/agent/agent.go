@@ -281,8 +281,8 @@ type Agent struct {
 	// dispatch/results, usage, notices). The agent no longer formats output
 	// itself — a frontend's Sink decides how to render. Never nil; New defaults
 	// it to event.Discard.
-	sink event.Sink
-
+	sink                event.Sink
+	requireVisibleFinal bool // internal callers require final Content
 	// lastUsage caches the most recent per-turn telemetry the provider reported so
 	// the CLI can expose a context gauge without re-scraping the usage line. The
 	// run loop writes it while a frontend's status line reads it, so it is atomic.
@@ -535,17 +535,22 @@ type Agent struct {
 	// under the window (consecutiveCompacts crosses the limit), so auto-compaction
 	// pauses instead of looping. softCompactNoticed gates the one-shot soft-ratio
 	// notice so it fires once per approach, not every turn.
-	contextWindow       int
-	softCompactRatio    float64
-	toolResultSnipRatio float64
-	compactRatio        float64
-	compactForceRatio   float64
-	softCompactNoticed  bool
-	recentKeep          int
-	archiveDir          string
-	keepPolicy          KeepPolicy
-	compactStuck        bool
-	consecutiveCompacts int
+	contextWindow          int
+	softCompactRatio       float64
+	toolResultSnipRatio    float64
+	compactRatio           float64
+	compactForceRatio      float64
+	softCompactNoticed     bool
+	recentKeep             int
+	archiveDir             string
+	keepPolicy             KeepPolicy
+	compactStuck           bool
+	consecutiveCompacts    int
+	sessionPath            string // bound transcript path for projection sidecars
+	workspaceID            string // stable prompt-cache lineage component
+	cacheState             string // warm/cold/unknown; never provider-visible
+	compactionState        CompactionState
+	strictAlternatingRoles bool // coalesce projection user runs for strict providers
 	// activeTurnCreatedAt identifies the real/synthetic user message that began
 	// the currently running turn. Compaction may rewrite older history while a
 	// tool loop is active, but it must keep this message and everything after it
@@ -791,6 +796,8 @@ func (a *Agent) SetSession(s *Session) {
 	a.missingReasoningHealthyStreak = 0
 	a.repeatFailureCounts = nil
 	a.repeatFailureScope = ""
+	a.compactionState = CompactionState{} // lineage change; disk reloaded on Resume
+	a.cacheState = CacheStateUnknown
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
@@ -1053,12 +1060,10 @@ func (a *Agent) steerQueueLen() int {
 // fires (e.g. 0.8). The status line uses it to show headroom to the next compact.
 func (a *Agent) CompactRatio() float64 { return a.compactRatio }
 
-// CompactNow runs one compaction pass immediately, regardless of the
-// usage-ratio threshold maybeCompact normally honours. Used by the chat
-// TUI's `/compact` command so the user can reset the prefix before it
-// naturally fills up.
+// CompactNow forces one projection compaction (canonical transcript untouched).
 func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
-	return a.compact(ctx, "manual", instructions, true)
+	_, err := a.compactToProjection(ctx, "manual", instructions, true)
+	return err
 }
 
 // Options configures an Agent.
@@ -1082,15 +1087,14 @@ type Options struct {
 	// provider instance. It is attached to emitted Usage events so downstream
 	// usage accounting can attribute tokens to the exact model.
 	ModelRef string
-
+	// RequireVisibleFinal makes internal callers reject reasoning-only responses.
+	RequireVisibleFinal bool
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
-
 	// ReadOnlyExecution enables a permanent host-side read-only boundary for
 	// planner and research agents. It is intentionally independent of Plan mode
 	// so a stale collaboration flag cannot authorize a dynamic writer target.
 	ReadOnlyExecution bool
-
 	// PlannerMCPExecution enables Planner-trusted MCP through use_capability:
 	// authorized, non-destructive tools may run without readOnlyHint. Only
 	// NewPlannerAgent sets this; strict read-only sub-agents must not.
@@ -1110,14 +1114,17 @@ type Options struct {
 
 	// Context management. ContextWindow <= 0 disables compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
-	ContextWindow       int
-	SoftCompactRatio    float64
-	ToolResultSnipRatio float64
-	CompactRatio        float64
-	CompactForceRatio   float64
-	RecentKeep          int
-	ArchiveDir          string
-	KeepPolicy          KeepPolicy
+	ContextWindow          int
+	SoftCompactRatio       float64
+	ToolResultSnipRatio    float64
+	CompactRatio           float64
+	CompactForceRatio      float64
+	RecentKeep             int
+	ArchiveDir             string
+	KeepPolicy             KeepPolicy
+	SessionPath            string // projection sidecar path; empty = memory only
+	WorkspaceID            string // prompt-cache lineage component
+	StrictAlternatingRoles bool   // merge adjacent projection user turns for strict providers
 
 	// Hooks fires PreToolUse / PostToolUse shell hooks around tool calls. nil
 	// disables hook firing.
@@ -1276,10 +1283,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	} else {
 		maxSubagentDepth = NormalizeMaxSubagentDepth(maxSubagentDepth)
 	}
-	subagentDepth := opts.SubagentDepth
-	if subagentDepth < 0 {
-		subagentDepth = 0
-	}
+	subagentDepth := max(opts.SubagentDepth, 0)
 	reasoningByteLimit := opts.ReasoningByteLimit
 	if reasoningByteLimit == 0 {
 		reasoningByteLimit = defaultReasoningByteLimit
@@ -1297,6 +1301,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		modelRef:                  strings.TrimSpace(opts.ModelRef),
 		sink:                      sink,
+		requireVisibleFinal:       opts.RequireVisibleFinal,
 		gate:                      gate,
 		extensions:                opts.Extensions,
 		recoveryGate:              opts.RecoveryGate,
@@ -1329,9 +1334,16 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		recentKeep:                opts.RecentKeep,
 		archiveDir:                opts.ArchiveDir,
 		keepPolicy:                opts.KeepPolicy,
+		sessionPath:               strings.TrimSpace(opts.SessionPath),
+		workspaceID:               strings.TrimSpace(opts.WorkspaceID),
+		cacheState:                CacheStateUnknown,
+		strictAlternatingRoles:    opts.StrictAlternatingRoles,
 		subagentDepth:             subagentDepth,
 		maxSubagentDepth:          maxSubagentDepth,
 		mutationObserver:          opts.MutationObserver,
+	}
+	if a.sessionPath != "" {
+		a.LoadProjectionSidecar(a.sessionPath)
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
@@ -2349,90 +2361,6 @@ func toolBudgetNoticeText() string {
 	return "Tool round limit reached; asking the assistant to summarize progress."
 }
 
-// samplingRequest is a once-prepared, frozen provider request for one model
-// round. All stream retries replay this exact payload — no synthetic recovery
-// messages, no schema reorder, no previous_response_id drift from failed attempts.
-type samplingRequest struct {
-	req provider.Request
-}
-
-// prepareSamplingRequest runs interceptors and schema fetch once per model
-// round. Callers deep-copy via freezeProviderRequest before each Stream so
-// providers cannot mutate the shared freeze across retries.
-func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
-	// CreatedAt is durable UI metadata, not model input. Strip it from the
-	// transport copy so wall-clock differences never invalidate the provider's
-	// prompt-cache prefix (and custom providers cannot accidentally send it).
-	requestMessages := append([]provider.Message(nil), provider.ModelMessages(a.session.Messages)...)
-	for i := range requestMessages {
-		requestMessages[i].CreatedAt = 0
-	}
-	// context.prepare: extensions may rewrite the message copy feeding THIS
-	// request. The session log is never touched — the replacement is
-	// ephemeral, so the next request starts from the unmodified history and
-	// the prompt-cache prefix stays intact across turns.
-	requestMessages, err := a.interceptContextPrepare(ctx, requestMessages)
-	if err != nil {
-		return samplingRequest{}, err
-	}
-	req := provider.Request{
-		Messages:       requestMessages,
-		Tools:          a.tools.Schemas(),
-		MaxTokens:      a.maxOutputTokens,
-		Temperature:    provider.OptionalTemperature(a.temperature),
-		ResponseFormat: responseFormatFromRequest(ctx),
-	}
-	// provider.request: the fully assembled request gets one last ruling
-	// (revalidated by the payload registry) before it goes on the wire.
-	req, err = a.interceptProviderRequest(ctx, req)
-	if err != nil {
-		return samplingRequest{}, err
-	}
-	return samplingRequest{req: freezeProviderRequest(req)}, nil
-}
-
-// freezeProviderRequest deep-copies the provider-visible request surface so
-// retries share identical messages, tools order, temperature, and format.
-func freezeProviderRequest(req provider.Request) provider.Request {
-	out := req
-	if len(req.Messages) > 0 {
-		out.Messages = append([]provider.Message(nil), req.Messages...)
-		for i := range out.Messages {
-			if len(out.Messages[i].ToolCalls) > 0 {
-				out.Messages[i].ToolCalls = append([]provider.ToolCall(nil), out.Messages[i].ToolCalls...)
-			}
-			if len(out.Messages[i].Images) > 0 {
-				out.Messages[i].Images = append([]string(nil), out.Messages[i].Images...)
-			}
-			if len(out.Messages[i].ResponsesItems) > 0 {
-				items := make([]json.RawMessage, len(out.Messages[i].ResponsesItems))
-				for j, item := range out.Messages[i].ResponsesItems {
-					items[j] = append(json.RawMessage(nil), item...)
-				}
-				out.Messages[i].ResponsesItems = items
-			}
-		}
-	}
-	if len(req.Tools) > 0 {
-		out.Tools = make([]provider.ToolSchema, len(req.Tools))
-		for i, schema := range req.Tools {
-			out.Tools[i] = schema
-			if len(schema.Parameters) > 0 {
-				out.Tools[i].Parameters = append(json.RawMessage(nil), schema.Parameters...)
-			}
-		}
-	}
-	if req.Temperature != nil {
-		t := *req.Temperature
-		out.Temperature = &t
-	}
-	if req.ResponseFormat != nil {
-		rf := *req.ResponseFormat
-		out.ResponseFormat = &rf
-	}
-	return out
-}
-
 // stream runs one completion, emitting reasoning and text deltas as typed
 // events and collecting complete tool calls. A Message event closes the text
 // stream so a sink can re-render the streamed raw text as styled markdown. The
@@ -2797,7 +2725,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 	// session memory outside Session's lock.
 	calls = append([]provider.ToolCall(nil), calls...)
 	for _, c := range calls {
-		a.emitFullToolDispatch(c, false)
+		a.emitFullToolDispatch(ctx, c, false)
 	}
 
 	results := make([]string, len(calls))
@@ -2824,10 +2752,10 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) bat
 		writer := known && !t.ReadOnly()
 		surfaceWriters[i] = writer
 		if earlierWriterRan && writer {
-			if refreshed, changed := refreshCurrentFileDiff(t, calls[i]); changed {
+			if refreshed, changed := refreshCurrentFileDiff(ctx, t, calls[i]); changed {
 				calls[i] = refreshed
 				a.session.UpdateToolCallPreview(refreshed)
-				a.emitFullToolDispatch(refreshed, true)
+				a.emitFullToolDispatch(ctx, refreshed, true)
 			}
 		}
 		start := time.Now()
@@ -3232,13 +3160,13 @@ func batchCallStaticallySkippable(a *Agent, call provider.ToolCall) bool {
 	return !readOnly || evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly)
 }
 
-func (a *Agent) emitFullToolDispatch(c provider.ToolCall, refreshed bool) {
+func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) {
 	t, _, ambiguous := a.tools.ResolveCall(c.Name)
 	ok := t != nil && len(ambiguous) == 0
 	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed}
 	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
 	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
-		if ch, ok := tool.PreviewChange(t, json.RawMessage(c.Arguments)); ok {
+		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(c.Arguments)); ok {
 			ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
 		}
 	}
@@ -3284,7 +3212,7 @@ func (a *Agent) emitResolvedToolDispatch(c provider.ToolCall) {
 // earlier successful writers in the same provider batch. Preview failures clear
 // any stale initial diff; a later Execute will then fail or ask for recovery
 // without presenting the user with a preview that no longer describes disk.
-func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
+func refreshCurrentFileDiff(ctx context.Context, t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
 	pv, ok := t.(tool.Previewer)
 	if !ok {
 		return call, false
@@ -3293,7 +3221,7 @@ func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolC
 	refreshed.Diff = ""
 	refreshed.Added = 0
 	refreshed.Removed = 0
-	if change, err := pv.Preview(json.RawMessage(call.Arguments)); err == nil {
+	if change, err := pv.Preview(ctx, json.RawMessage(call.Arguments)); err == nil {
 		refreshed.Diff = change.Diff
 		refreshed.Added = change.Added
 		refreshed.Removed = change.Removed
@@ -3302,7 +3230,7 @@ func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolC
 	return refreshed, changed
 }
 
-func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
+func (a *Agent) withPreviewFileDiffs(ctx context.Context, calls []provider.ToolCall) []provider.ToolCall {
 	if len(calls) == 0 {
 		return calls
 	}
@@ -3317,7 +3245,7 @@ func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolC
 		if !ok {
 			continue
 		}
-		if ch, ok := tool.PreviewChange(t, json.RawMessage(out[i].Arguments)); ok {
+		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(out[i].Arguments)); ok {
 			out[i].Diff = ch.Diff
 			out[i].Added = ch.Added
 			out[i].Removed = ch.Removed
@@ -3387,7 +3315,7 @@ launch:
 			<-sem
 			break
 		}
-		i := i
+
 		wg.Add(1)
 		ranUntil = i + 1
 		go func() {
@@ -4106,8 +4034,8 @@ func (a *Agent) toolReadOnly(name string) bool {
 // firstLine returns s up to its first newline — a one-line failure summary for
 // the display Err, while the full error stays in the model-facing output.
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

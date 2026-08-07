@@ -2,6 +2,380 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.21.2",
+      "date": "2026-08-07",
+      "channel": "stable",
+      "title": {
+        "en": "Reasonix v1.21.2: Output Budgets, Cache-Aware Context, and Agent Hardening",
+        "zh": "Reasonix v1.21.2：输出预算提升、缓存感知上下文与 Agent 加固"
+      },
+      "summary": {
+        "en": "This release raises output budgets to 128K, introduces cache-aware context projection for more efficient history management, hardens agent behavior with work-practice policies, and delivers numerous fixes across file tools, sandbox detection, hooks, and updates.",
+        "zh": "此版本将输出预算提升至 128K，引入缓存感知上下文投影以更高效管理历史，通过工作实践策略加固 Agent 行为，并修复了文件工具、沙箱检测、钩子和更新等方面的诸多问题。"
+      },
+      "surfaces": [
+        "desktop"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "ACP Guide",
+            "zh": "ACP 指南"
+          },
+          "body": {
+            "en": "Learn how to use the Agent Communication Protocol for editor integration.",
+            "zh": "了解如何使用 Agent 通信协议进行编辑器集成。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/ACP.md"
+        },
+        {
+          "title": {
+            "en": "ACP Guide (Chinese)",
+            "zh": "ACP 指南（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the ACP guide.",
+            "zh": "ACP 指南的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/ACP.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Desktop Hooks (Chinese)",
+            "zh": "桌面钩子（中文）"
+          },
+          "body": {
+            "en": "Guide for configuring and using desktop hooks.",
+            "zh": "配置和使用桌面钩子的指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/DESKTOP_HOOKS.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "User Guide",
+            "zh": "用户指南"
+          },
+          "body": {
+            "en": "Comprehensive guide to using Reasonix.",
+            "zh": "使用 Reasonix 的综合指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/GUIDE.md"
+        },
+        {
+          "title": {
+            "en": "User Guide (Chinese)",
+            "zh": "用户指南（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the user guide.",
+            "zh": "用户指南的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/GUIDE.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Plugin Packages",
+            "zh": "插件包"
+          },
+          "body": {
+            "en": "Documentation for creating and managing plugin packages.",
+            "zh": "创建和管理插件包的文档。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/PLUGIN_PACKAGES.md"
+        },
+        {
+          "title": {
+            "en": "Plugin Packages (Chinese)",
+            "zh": "插件包（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the plugin packages documentation.",
+            "zh": "插件包文档的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/PLUGIN_PACKAGES.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Recovery Guide",
+            "zh": "恢复指南"
+          },
+          "body": {
+            "en": "Steps to recover from stuck updates and other issues.",
+            "zh": "从卡住的更新和其他问题中恢复的步骤。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/RECOVERY.md"
+        },
+        {
+          "title": {
+            "en": "Recovery Guide (Chinese)",
+            "zh": "恢复指南（中文）"
+          },
+          "body": {
+            "en": "Chinese version of the recovery guide.",
+            "zh": "恢复指南的中文版本。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/RECOVERY.zh-CN.md"
+        },
+        {
+          "title": {
+            "en": "Specification",
+            "zh": "规范"
+          },
+          "body": {
+            "en": "Technical specification of Reasonix.",
+            "zh": "Reasonix 的技术规范。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/SPEC.md"
+        },
+        {
+          "title": {
+            "en": "Cache-Aware Compaction Design",
+            "zh": "缓存感知压缩设计"
+          },
+          "body": {
+            "en": "Research document on cache-aware context projection.",
+            "zh": "关于缓存感知上下文投影的研究文档。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/585d442d0637ed916a567b04249473f765879b6b/docs/research/cache-aware-compaction-design.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "title": {
+            "en": "Raised output budgets to 128K with cache-aware context projection",
+            "zh": "输出预算提升至 128K，并引入缓存感知上下文投影"
+          },
+          "body": {
+            "en": "Provider-scoped output budgets now support up to 128K tokens for compatible providers. A new cache-aware context projection system separates durable history from the model-visible request, preserving the canonical transcript and using cache state only for cost strategy. This prevents history rewriting on cold resume and ensures deterministic projection order.",
+            "zh": "提供者范围的输出预算现在支持兼容提供者高达 128K 的令牌。新的缓存感知上下文投影系统将持久历史与模型可见请求分离，保留规范转录，并仅将缓存状态用于成本策略。这防止了冷恢复时的历史重写，并确保确定性的投影顺序。"
+          },
+          "refs": [
+            7839
+          ]
+        },
+        {
+          "kind": "new",
+          "title": {
+            "en": "Work-practice policy in system prompt",
+            "zh": "系统提示中的工作实践策略"
+          },
+          "body": {
+            "en": "A new work-practice policy is appended to every system prompt, instructing the agent to implement the requested approach exactly, keep scratch files out of the repository, and verify the final diff before declaring done. This policy cannot be dropped by custom personas.",
+            "zh": "新的工作实践策略被附加到每个系统提示中，指示代理严格实现所请求的方法，将临时文件排除在仓库之外，并在声明完成前验证最终差异。自定义角色无法删除此策略。"
+          },
+          "refs": [
+            7779
+          ]
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "en": "File tools now route through FileOverlay and writes are atomic",
+            "zh": "文件工具现在通过 FileOverlay 路由，且写入为原子操作"
+          },
+          "body": {
+            "en": "All file-editing tools (edit_file, multi_edit, delete_range, delete_symbol, notebook_edit) now respect the host FileOverlay, preventing accidental overwrites of unsaved editor buffers. File writes are now atomic, matching the behavior of internal state files.",
+            "zh": "所有文件编辑工具（edit_file、multi_edit、delete_range、delete_symbol、notebook_edit）现在遵循主机 FileOverlay，防止意外覆盖未保存的编辑器缓冲区。文件写入现在是原子操作，与内部状态文件的行为一致。"
+          },
+          "refs": [
+            7872
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Self-healing for stuck pending updates",
+            "zh": "卡住的待更新事务自愈"
+          },
+          "body": {
+            "en": "In-app updates that get stuck in a pending state now self-heal after a configurable timeout (default 24h). A new 'Discard previous update' button allows users to manually clear a stuck transaction. Version comparison now normalizes leading 'v' prefixes.",
+            "zh": "卡在待处理状态的应用内更新现在在可配置的超时（默认 24 小时）后自愈。新的“放弃上次更新”按钮允许用户手动清除卡住的事务。版本比较现在规范化前导 'v' 前缀。"
+          },
+          "refs": [
+            7820
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Prevent stale results after reasoning-only stops",
+            "zh": "防止仅推理停止后的过时结果"
+          },
+          "body": {
+            "en": "Internal consumers like sub-agents and planners now require a visible final answer. A reasoning-only stop triggers a bounded retry (up to two additional requests) to obtain a visible response, preventing empty or stale results from being used.",
+            "zh": "子代理和规划器等内部消费者现在需要可见的最终答案。仅推理停止会触发有界重试（最多两次额外请求）以获取可见响应，防止使用空或过时的结果。"
+          },
+          "refs": [
+            7817
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Sandbox detection now probes usability on macOS",
+            "zh": "macOS 上的沙箱检测现在探测可用性"
+          },
+          "body": {
+            "en": "On macOS 10.14+, sandbox-exec may be present but non-functional. The sandbox availability check now actually probes sandbox_apply with a minimal profile, preventing silent failures and incorrect status reporting.",
+            "zh": "在 macOS 10.14+ 上，sandbox-exec 可能存在但无法使用。沙箱可用性检查现在使用最小配置文件实际探测 sandbox_apply，防止静默失败和错误的状态报告。"
+          },
+          "refs": [
+            7807
+          ]
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "en": "Normalized POSIX script execution for hooks on Windows",
+            "zh": "Windows 上钩子的 POSIX 脚本执行规范化"
+          },
+          "body": {
+            "en": "POSIX shebang scripts in plugin, project, and global hooks on Windows are now detected and routed through the discovered Git Bash runtime. Paths are normalized for Bash compatibility, while native .cmd/.bat behavior is preserved.",
+            "zh": "Windows 上插件、项目和全局钩子中的 POSIX shebang 脚本现在被检测并通过发现的 Git Bash 运行时路由。路径被规范化为 Bash 兼容，同时保留原生 .cmd/.bat 行为。"
+          },
+          "refs": [
+            7863
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "title": {
+              "en": "Extended file-size linting to TypeScript",
+              "zh": "将文件大小检查扩展到 TypeScript"
+            },
+            "body": {
+              "en": "The repolint file-size ceiling now applies to .ts and .tsx files, revealing previously invisible oversized front-end files. Locale tables are exempt as data files.",
+              "zh": "repolint 文件大小上限现在适用于 .ts 和 .tsx 文件，揭示了以前不可见的超大前端文件。语言环境表作为数据文件被豁免。"
+            },
+            "refs": [
+              7879
+            ]
+          },
+          {
+            "title": {
+              "en": "Adopted modern Go stdlib idioms",
+              "zh": "采用现代 Go 标准库惯用法"
+            },
+            "body": {
+              "en": "Mechanical rewrites using range over int, slices.Contains, min/max builtins, and other modern Go features, reducing code by 549 lines. Linters are now enabled to prevent regression.",
+              "zh": "使用 range over int、slices.Contains、min/max 内置函数等现代 Go 特性进行机械重写，减少 549 行代码。现在启用了 linter 以防止回退。"
+            },
+            "refs": [
+              7831
+            ]
+          },
+          {
+            "title": {
+              "en": "Linting now covers all build tags",
+              "zh": "Lint 现在覆盖所有构建标签"
+            },
+            "body": {
+              "en": "golangci-lint now runs on darwin and windows build tags in addition to linux, catching previously invisible issues in platform-specific code.",
+              "zh": "golangci-lint 现在除了 linux 外还在 darwin 和 windows 构建标签上运行，捕获平台特定代码中以前不可见的问题。"
+            },
+            "refs": [
+              7837
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "title": {
+              "en": "Error comparison now uses errors.Is/As throughout",
+              "zh": "错误比较现在全面使用 errors.Is/As"
+            },
+            "body": {
+              "en": "All direct error comparisons and type assertions have been converted to errors.Is and errors.As, and the errorlint linter is enabled to prevent future wrapping bugs.",
+              "zh": "所有直接的错误比较和类型断言已转换为 errors.Is 和 errors.As，并启用了 errorlint linter 以防止未来的包装错误。"
+            },
+            "refs": [
+              7834
+            ]
+          },
+          {
+            "title": {
+              "en": "Removed section-banner decorations from comments",
+              "zh": "从注释中移除章节横幅装饰"
+            },
+            "body": {
+              "en": "312 section-banner separators have been removed or simplified, aligning with code style guidelines. The repolint banner ceiling is now zero.",
+              "zh": "312 个章节横幅分隔符已被移除或简化，符合代码风格指南。repolint 横幅上限现在为零。"
+            },
+            "refs": [
+              7840
+            ]
+          },
+          {
+            "title": {
+              "en": "Reduced session concurrency test runtime under race detector",
+              "zh": "减少竞争检测器下会话并发测试的运行时间"
+            },
+            "body": {
+              "en": "The TestSessionConcurrentAddAndRead test has been optimized to run within the race detector's time budget, reducing runtime from ~9m48s to ~47s under -race.",
+              "zh": "TestSessionConcurrentAddAndRead 测试已优化，可在竞争检测器的时间预算内运行，在 -race 下将运行时间从约 9 分 48 秒减少到约 47 秒。"
+            },
+            "refs": [
+              7821
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "title": {
+              "en": "CLI and SSH tests no longer reach the outside world",
+              "zh": "CLI 和 SSH 测试不再访问外部网络"
+            },
+            "body": {
+              "en": "Tests that were inadvertently making real API calls or shelling out to the host's ssh are now properly isolated, ensuring deterministic results.",
+              "zh": "无意中进行真实 API 调用或调用主机 ssh 的测试现在已正确隔离，确保结果确定。"
+            },
+            "refs": [
+              7856
+            ]
+          },
+          {
+            "title": {
+              "en": "Corrected PR metadata gate documentation",
+              "zh": "更正了 PR 元数据门文档"
+            },
+            "body": {
+              "en": "The Documentation-impact gate rules are now accurately documented, including accepted value formats and separator requirements.",
+              "zh": "Documentation-impact 门规则现在已准确记录，包括接受的值格式和分隔符要求。"
+            },
+            "refs": [
+              7876
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "esengine",
+        "clearnature",
+        "chuiwenwei",
+        "SivanCola",
+        "Nath-Vikky"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.21.2",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.21.1...desktop-v1.21.2",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.21.2",
+      "baseVersion": "1.21.2",
+      "status": "reviewed",
+      "previousRelease": "1.21.1",
+      "builds": {
+        "cli": "v1.21.2",
+        "desktop": "v1.21.2",
+        "npm": "1.21.2"
+      }
+    },
+    {
       "version": "1.21.1",
       "date": "2026-08-07",
       "channel": "stable",

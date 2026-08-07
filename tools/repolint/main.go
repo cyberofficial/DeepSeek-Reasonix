@@ -114,8 +114,11 @@ func run(root string) ([]Finding, error) {
 		if src == nil {
 			continue
 		}
-		findings = append(findings, checkComments(src)...)
 		findings = append(findings, checkSize(src)...)
+		if src.file == nil {
+			continue
+		}
+		findings = append(findings, checkComments(src)...)
 		imports[rel] = src.importRefs()
 	}
 	return append(findings, checkLayering(imports)...), nil
