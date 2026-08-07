@@ -8,8 +8,21 @@ name: Build CLI
 on:
   push:
     branches: [master]
+    # Build only when relevant files change - doc/readme-only edits skip the run.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "site/**"
+      - "release-notes/**"
+      - "*.md"
   pull_request:
     branches: [master]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "site/**"
+      - "release-notes/**"
+      - "*.md"
 
 permissions:
   contents: read
