@@ -54,6 +54,9 @@
 > per-directory scheduled-task persistence (`<workspace>/.reasonix/scheduled-tasks.json`),
 > and the `NEXT JOB` status-bar indicator. Everything upstream offers remains available;
 > this fork adds the scheduler work on top and tracks upstream `main-v2` continuously.
+>
+> **Latest builds:** grab the latest binaries from the build workflow:
+> <https://github.com/cyberofficial/DeepSeek-Reasonix/actions/workflows/build-matrix.yml>
 <!-- FORK-NOTICE-END -->
 
 <br/>
