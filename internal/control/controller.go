@@ -554,7 +554,6 @@ func New(opts Options) *Controller {
 		usageTee = NewGoalUsageTee(sink).(*goalUsageTee)
 		sink = usageTee
 	}
-	sink = event.Coalesce(sink, event.DefaultStreamDeltaWindow)
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
