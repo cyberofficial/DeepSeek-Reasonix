@@ -536,6 +536,14 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		} else {
 			c.notice(text)
 		}
+	case "/loopaction":
+		args := strings.TrimSpace(strings.TrimPrefix(trimmed, "/loopaction"))
+		text, err := c.StartLoopAction(args)
+		if err != nil {
+			c.notice("loopaction: " + err.Error())
+		} else {
+			c.notice(text)
+		}
 	case "/looplist":
 		c.notice(c.LoopListText())
 	case "/loopdel":

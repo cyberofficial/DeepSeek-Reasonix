@@ -2185,6 +2185,7 @@ func defaultFullBootToolNames() []string {
 		"code_index",
 		"complete_step",
 		"cron_create",
+		"cron_create_action",
 		"cron_delete",
 		"cron_list",
 		"delete_range",

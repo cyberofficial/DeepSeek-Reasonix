@@ -138,10 +138,14 @@ type Messages struct {
 	SandboxEscapeRuntimeReason             string // fallback reason when an OS sandbox cannot start the command
 	SandboxEscapeDeclined                  string // model-facing denial when the user declines a one-shot unconfined retry
 	ApprovalToolLabelConfigWrite           string // user-facing label for Reasonix-managed config write approvals
+	ApprovalToolLabelCommandTask           string // user-facing label for scheduled OS-command task approvals
 	ConfigWriteSubjectPrefix               string // subject prefix before the config file path for managed config write approval
 	ConfigWriteReason                      string // reason shown for managed config write approval
 	ConfigWriteDeclined                    string // model-facing denial when the user declines a managed config write
 	ConfigWriteApprovalChoices             string // approval choice list for managed config write prompts
+	CommandTaskSubjectPrefix               string // subject prefix before the command for scheduled OS-command task approval
+	CommandTaskReason                      string // reason shown for scheduled OS-command task approval
+	CommandTaskDeclined                    string // model-facing denial when the user declines a scheduled OS-command task
 	PermissionSavedFmt                     string // permission rule saved notice: path, rule
 	PermissionAlreadyAllowedFmt            string // permission rule already covered notice: path, rule
 	PermissionSaveFailedFmt                string // permission rule save failure notice: rule, error
@@ -241,6 +245,7 @@ type Messages struct {
 	CmdMigrate          string // /migrate
 	CmdGoal             string // /goal
 	CmdLoop             string // /loop
+	CmdLoopAction       string // /loopaction
 	CmdLoopStatus       string // /loopstatus
 	CmdLoopList         string // /looplist
 	CmdLoopDel          string // /loopdel

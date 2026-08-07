@@ -39,6 +39,13 @@ type Task struct {
 	Created  time.Time `json:"created"`
 	NextFire time.Time `json:"nextFire"` // zero = paused / no pending wakeup
 	Fires    int       `json:"fires"`    // iterations completed (informational)
+	// Action fields — when Command is non-empty the task runs a host command
+	// instead of delivering Prompt to the LLM.
+	Command        string    `json:"command,omitempty"`        // OS command to run (e.g. "bash script.sh")
+	MatchPattern   string    `json:"matchPattern,omitempty"`   // regex to test against output
+	ActionResponse bool      `json:"actionResponse,omitempty"` // false (--no-ai): never wake the LLM
+	Session        string    `json:"session,omitempty"`        // creating session's origin; other sessions hold the task on load
+	ExpiresAt      time.Time `json:"expiresAt,omitempty"`      // explicit self-delete time; zero = 7-day default applies
 	// firing marks a delivered task whose turn has not started yet (it may be
 	// parked behind a foreground turn). fireDue skips firing tasks so a busy
 	// session cannot queue duplicate turns for one due cycle. It is in-memory
@@ -56,6 +63,13 @@ type View struct {
 	Created  string `json:"created,omitempty"`  // RFC3339
 	NextFire string `json:"nextFire,omitempty"` // RFC3339, empty when paused
 	Fires    int    `json:"fires"`
+	// Action fields mirror Task so command-based tasks survive the
+	// View round-trip in the shared per-directory sidecar.
+	Command        string `json:"command,omitempty"`
+	MatchPattern   string `json:"matchPattern,omitempty"`
+	ActionResponse bool   `json:"actionResponse,omitempty"`
+	Session        string `json:"session,omitempty"`
+	ExpiresAt      string `json:"expiresAt,omitempty"` // RFC3339; empty = no explicit expiry
 }
 
 // Scheduler owns the session's scheduled-task set and the ticker goroutine.
@@ -66,14 +80,18 @@ type Scheduler struct {
 	// (saveLocked) does not resurrect them from another session's snapshot of
 	// the shared per-directory sidecar. In-memory only: Load resets it because
 	// a fresh session's source of truth is the file itself.
-	deleted  map[string]bool
-	started  bool
-	stopCh   chan struct{}
-	done     chan struct{}
-	onFire   func(task Task) // set once via OnFire; called from the ticker goroutine
-	persist  string          // sidecar path for Save; "" disables persistence
-	writeMu  sync.Mutex      // serializes sidecar writes off mu
-	lastSave time.Time       // rate-limit stamp, guarded by mu (Load resets it)
+	deleted   map[string]bool
+	started   bool
+	stopCh    chan struct{}
+	done      chan struct{}
+	onFire    func(task Task) // set once via OnFire; called from the ticker goroutine
+	onCommand func(task Task) // set once via OnCommand; command-based tasks dispatch here
+	// origin identifies the session allowed to auto-run command tasks; foreign
+	// origins are held (paused) on Load instead of executed.
+	origin   string
+	persist  string     // sidecar path for Save; "" disables persistence
+	writeMu  sync.Mutex // serializes sidecar writes off mu
+	lastSave time.Time  // rate-limit stamp, guarded by mu (Load resets it)
 }
 
 // New returns an idle Scheduler. Call Start to begin firing tasks.
@@ -95,6 +113,25 @@ func (s *Scheduler) OnFire(fn func(task Task)) {
 	if s.onFire == nil {
 		s.onFire = fn
 	}
+}
+
+// OnCommand installs the callback invoked for due command-based tasks
+// (Command != ""). Same first-install-wins rule as OnFire.
+func (s *Scheduler) OnCommand(fn func(task Task)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.onCommand == nil {
+		s.onCommand = fn
+	}
+}
+
+// SetOrigin names the session that may auto-run command-based tasks; Load
+// holds command tasks created by other origins (paused, never auto-executed).
+// It must be set before Load on the construction path.
+func (s *Scheduler) SetOrigin(origin string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.origin = origin
 }
 
 // SetPersistPath names the sidecar file saves are written to ("" disables
@@ -142,9 +179,14 @@ func (s *Scheduler) loop(stopCh, done chan struct{}) {
 func (s *Scheduler) fireDue() {
 	now := time.Now()
 	var due []Task
-	onFire := s.onFire // snapshot under mu; OnFire only sets it once, pre-Start
+	onFire := s.onFire       // snapshot under mu; OnFire only sets it once, pre-Start
+	onCommand := s.onCommand // snapshot under mu; OnCommand only sets it once, pre-Start
 	s.mu.Lock()
 	for _, t := range s.tasks {
+		if !t.ExpiresAt.IsZero() && !now.Before(t.ExpiresAt) {
+			delete(s.tasks, t.ID) // explicit expiry: self-delete, no further fires
+			continue
+		}
 		if t.firing {
 			continue // a turn for this task is already queued/starting
 		}
@@ -171,6 +213,14 @@ func (s *Scheduler) fireDue() {
 	s.mu.Unlock()
 
 	for _, t := range due {
+		if t.Command != "" {
+			// Command-based (loopaction) task: the onCommand callback runs
+			// the host command and decides whether to wake the LLM.
+			if onCommand != nil {
+				onCommand(t)
+			}
+			continue
+		}
 		if onFire != nil {
 			onFire(t)
 		}
@@ -255,7 +305,43 @@ func (s *Scheduler) Add(cronExpr, prompt string, nextFire time.Time, oneShot, no
 	return id, nil
 }
 
-// Delete removes a task by ID. ok reports whether it existed. The ID is
+// AddAction registers a new command-based task: each fire dispatches to the
+// onCommand callback (the Controller's runCommandAction) instead of onFire,
+// so the host command runs and the LLM is only woken when the output needs a
+// decision. Recurrence, one-shot deletion, noExpire, and the task limit all
+// match Add.
+func (s *Scheduler) AddAction(cronExpr, command, matchPattern string, oneShot, noExpire, actionResponse bool, expiresAt time.Time) (string, error) {
+	id, err := newTaskID()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	if len(s.tasks) >= DefaultTaskLimit {
+		s.mu.Unlock()
+		return "", ErrTaskLimit
+	}
+	nextFire := time.Now() // empty cronExpr fires immediately, like Add(time.Now())
+	if cronExpr != "" {
+		nextFire = Next(cronExpr, time.Now())
+	}
+	s.tasks[id] = &Task{
+		ID:             id,
+		CronExpr:       cronExpr,
+		Command:        command,
+		MatchPattern:   matchPattern,
+		ActionResponse: actionResponse,
+		Session:        s.origin,
+		ExpiresAt:      expiresAt,
+		OneShot:        oneShot,
+		NoExpire:       noExpire,
+		Created:        time.Now(),
+		NextFire:       nextFire,
+	}
+	s.mu.Unlock()
+	s.saveLocked()
+	return id, nil
+}
+
 // tombstoned even when this session no longer holds it, so a later
 // merge-on-save cannot resurrect it from another session's stale snapshot of
 // the shared sidecar. Deletes persist immediately (saveNow) so a tombstone
@@ -383,16 +469,23 @@ func (s *Scheduler) Tasks() []View {
 
 func taskView(t *Task) View {
 	v := View{
-		ID:       t.ID,
-		CronExpr: t.CronExpr,
-		Prompt:   t.Prompt,
-		OneShot:  t.OneShot,
-		NoExpire: t.NoExpire,
-		Created:  t.Created.Format(time.RFC3339),
-		Fires:    t.Fires,
+		ID:             t.ID,
+		CronExpr:       t.CronExpr,
+		Prompt:         t.Prompt,
+		OneShot:        t.OneShot,
+		NoExpire:       t.NoExpire,
+		Created:        t.Created.Format(time.RFC3339),
+		Fires:          t.Fires,
+		Command:        t.Command,
+		MatchPattern:   t.MatchPattern,
+		ActionResponse: t.ActionResponse,
+		Session:        t.Session,
 	}
 	if !t.NextFire.IsZero() {
 		v.NextFire = t.NextFire.Format(time.RFC3339)
+	}
+	if !t.ExpiresAt.IsZero() {
+		v.ExpiresAt = t.ExpiresAt.Format(time.RFC3339)
 	}
 	return v
 }
@@ -576,17 +669,26 @@ func (s *Scheduler) Load(path string) {
 	kept := map[string]*Task{}
 	for i := range tasks {
 		t := &tasks[i]
-		if t.ID == "" || t.Prompt == "" {
-			continue // malformed entry
+		if t.ID == "" || (t.Prompt == "" && t.Command == "") {
+			continue // malformed entry (command-based tasks carry no Prompt)
 		}
 		if !t.NoExpire && now.Sub(t.Created) > taskExpiry {
 			continue // seven-day expiry (exempted by NoExpire)
+		}
+		if !t.ExpiresAt.IsZero() && !now.Before(t.ExpiresAt) {
+			continue // explicit expires_in deadline has passed
 		}
 		if t.OneShot && !t.NextFire.After(now) {
 			continue // missed one-shot: it already ran or is moot
 		}
 		if t.CronExpr != "" {
 			t.NextFire = Next(t.CronExpr, now)
+		}
+		if t.Command != "" && t.Session != s.origin {
+			// Command task from another session (or a repo-shipped sidecar):
+			// load it for visibility but never auto-run it — the user must
+			// delete and re-create it to take it over.
+			t.NextFire = time.Time{}
 		}
 		t.firing = false // a resumed task must be able to fire again
 		kept[t.ID] = t

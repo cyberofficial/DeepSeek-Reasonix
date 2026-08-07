@@ -53,6 +53,12 @@ func (cronList) Execute(ctx context.Context, args json.RawMessage) (string, erro
 		if len(prompt) > 60 {
 			prompt = prompt[:57] + "..."
 		}
+		if v.Command != "" {
+			prompt = "command: " + v.Command // action tasks carry no prompt
+			if len(prompt) > 60 {
+				prompt = prompt[:57] + "..."
+			}
+		}
 		oneShot := ""
 		if v.OneShot {
 			oneShot = " (one-shot)"

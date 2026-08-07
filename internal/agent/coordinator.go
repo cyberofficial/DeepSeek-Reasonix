@@ -324,6 +324,20 @@ func (c *Coordinator) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
 	}
 }
 
+// SetCommandTaskApprover propagates scheduled OS-command task confirmation to
+// both tool-using agents in two-model mode.
+func (c *Coordinator) SetCommandTaskApprover(g tool.CommandTaskApprover) {
+	if c == nil {
+		return
+	}
+	if c.plannerAgent != nil {
+		c.plannerAgent.SetCommandTaskApprover(g)
+	}
+	if c.executor != nil {
+		c.executor.SetCommandTaskApprover(g)
+	}
+}
+
 // SetPlannerPlanApprover connects planner-authored "wait for approval" outputs
 // to the host's approval surface. Without one, Coordinator keeps the legacy
 // direct handoff behavior so non-interactive runs cannot block forever.

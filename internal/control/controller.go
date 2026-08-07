@@ -641,6 +641,9 @@ func New(opts Options) *Controller {
 	c.scheduler.OnFire(func(t scheduler.Task) {
 		c.runScheduledTurn(t)
 	})
+	c.scheduler.OnCommand(func(t scheduler.Task) {
+		c.runCommandAction(t)
+	})
 	if opts.Extensions != nil {
 		c.extensions = opts.Extensions
 		c.sink = newFrontendEventSink(c.sink, opts.Extensions)
@@ -873,6 +876,7 @@ func (c *Controller) rebindScheduler(sessionPath string) {
 	// per-directory builds): import any existing tasks before Load so no
 	// previously scheduled loop silently vanishes.
 	store.MigrateScheduledTasks(c.workspaceRoot, sessionPath)
+	c.scheduler.SetOrigin(sessionPath)
 	c.scheduler.SetPersistPath(path)
 	c.scheduler.Load(path)
 }
@@ -1095,6 +1099,12 @@ const SandboxEscapeApprovalTool = "sandbox_escape"
 // providers, sandbox rules, permissions, and MCP servers for future sessions,
 // so YOLO/auto approval must never answer it.
 const ManagedConfigWriteApprovalTool = "config_write"
+
+// CommandTaskApprovalTool is the internal Tool name used to confirm a scheduled
+// OS-command task before it is registered (cron_create_action). It is a fresh
+// human decision: the command runs later, unattended and unsandboxed, so
+// YOLO/auto approval must never answer it.
+const CommandTaskApprovalTool = "command_task"
 
 // planApprovedMessage is the follow-up turn sent once the user approves a plan —
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
@@ -2271,11 +2281,13 @@ func (c *Controller) EnableInteractiveApproval() {
 	trustGate := planModeReadOnlyTrustApprover{c}
 	escapeApprover := sandboxEscapeApprover{c}
 	configApprover := managedConfigWriteApprover{c}
+	commandApprover := commandTaskApprover{c}
 	if c.executor != nil {
 		c.executor.SetGate(c.newInteractiveGate())
 		c.executor.SetPlanModeReadOnlyTrustGate(trustGate)
 		c.executor.SetSandboxEscapeApprover(escapeApprover)
 		c.executor.SetConfigWriteApprover(configApprover)
+		c.executor.SetCommandTaskApprover(commandApprover)
 		c.executor.SetAsker(c)
 	}
 	if setter, ok := c.runner.(interface {
@@ -2292,6 +2304,11 @@ func (c *Controller) EnableInteractiveApproval() {
 		SetConfigWriteApprover(tool.ConfigWriteApprover)
 	}); ok {
 		setter.SetConfigWriteApprover(configApprover)
+	}
+	if setter, ok := c.runner.(interface {
+		SetCommandTaskApprover(tool.CommandTaskApprover)
+	}); ok {
+		setter.SetCommandTaskApprover(commandApprover)
 	}
 	if setter, ok := c.runner.(interface {
 		SetPlannerPlanApprover(agent.PlannerPlanApprover)
@@ -5853,6 +5870,32 @@ func (m managedConfigWriteApprover) ManagedConfigWriteSessionAllowed(_ context.C
 
 func managedConfigWriteApprovalSubject(path string) string {
 	return i18n.M.ConfigWriteSubjectPrefix + strings.TrimSpace(path)
+}
+
+// commandTaskApprover routes a scheduled OS-command task registration
+// (cron_create_action) through the fresh-human approval prompt (see
+// CommandTaskApprovalTool). The command runs later, unattended, so the
+// registration itself is the consent point.
+type commandTaskApprover struct{ c *Controller }
+
+func (a commandTaskApprover) ApproveCommandTask(ctx context.Context, req tool.CommandTaskRequest) (bool, string, error) {
+	subject := commandTaskApprovalSubject(req.Command)
+	args, _ := json.Marshal(map[string]string{"command": req.Command, "schedule": req.Schedule})
+	reply, err := a.c.requestFreshApprovalDecision(ctx, CommandTaskApprovalTool, subject, args, i18n.M.CommandTaskReason)
+	if err != nil {
+		return false, "approval aborted", err
+	}
+	if !reply.allow {
+		return false, i18n.M.CommandTaskDeclined, nil
+	}
+	if reply.session {
+		a.c.approval.grantSession(CommandTaskApprovalTool, subject)
+	}
+	return true, "", nil
+}
+
+func commandTaskApprovalSubject(command string) string {
+	return i18n.M.CommandTaskSubjectPrefix + promptPreview(command)
 }
 
 func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest) (bool, string, error) {

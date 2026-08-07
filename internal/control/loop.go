@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/scheduler"
+	"reasonix/internal/secrets"
 )
 
 // loopMaintenancePrompt is the built-in prompt for a bare /loop (no interval,
@@ -95,6 +98,96 @@ func parseLoopArgs(input string) (interval, prompt string, noExpire bool) {
 	return "", rest, noExpire
 }
 
+// StartLoopAction creates a command-based scheduled task from a /loopaction
+// command's arguments: on each fire the OS runs the command and the LLM is
+// only woken when the output needs a decision (see runCommandAction).
+func (c *Controller) StartLoopAction(input string) (string, error) {
+	sched := c.scheduler
+	if sched == nil {
+		return "", fmt.Errorf("scheduler is unavailable in this session")
+	}
+	interval, command, matchPattern, actionResponse, noExpire, err := parseLoopActionArgs(input)
+	if err != nil {
+		return "", fmt.Errorf("loopaction: %v", err)
+	}
+	if strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("loopaction: a command is required")
+	}
+	if interval == "" {
+		interval = "1m"
+	}
+	cronExpr, ok := scheduler.ParseInterval(interval)
+	if !ok {
+		// Unreachable today (parseLoopActionArgs only accepts parseable
+		// interval tokens), but encode the invariant so a future parser
+		// change cannot create a dormant task with an empty cronExpr.
+		return "", fmt.Errorf("loopaction: %q is not a valid interval token (s/m/h/d)", interval)
+	}
+	id, err := sched.AddAction(cronExpr, strings.TrimSpace(command), matchPattern,
+		false, noExpire, actionResponse, time.Time{})
+	if err != nil {
+		return "", err
+	}
+	resp := "off"
+	if actionResponse {
+		resp = "on"
+	}
+	note := fmt.Sprintf("loopaction started — task %s: %s, ai-response: %s", id, interval, resp)
+	if matchPattern != "" {
+		note += fmt.Sprintf(", match: %q", matchPattern)
+	}
+	if noExpire {
+		note += " (no expiry)"
+	}
+	note += "\ncommand: " + promptPreview(strings.TrimSpace(command))
+	return note, nil
+}
+
+// parseLoopActionArgs splits /loopaction into flags, an optional interval, and
+// the command. Flags may appear in any order before the command; the command is
+// everything after them, kept verbatim so quoting survives. --no-ai sets
+// actionResponse=false and nothing re-enables it.
+func parseLoopActionArgs(input string) (
+	interval, command, matchPattern string, actionResponse, noExpire bool, err error,
+) {
+	actionResponse = true // default: wake the LLM when there is output to act on
+	rest := strings.TrimSpace(input)
+	for {
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return
+		}
+		switch fields[0] {
+		case "--forever":
+			noExpire = true
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		case "--no-ai":
+			actionResponse = false
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		case "--match":
+			if len(fields) < 2 {
+				err = fmt.Errorf("--match requires a pattern")
+				return
+			}
+			matchPattern = fields[1]
+			rest = rest[len(fields[0]):]         // drop "--match"
+			rest = strings.TrimLeft(rest, " \t") // any whitespace before the pattern
+			rest = rest[len(fields[1]):]         // drop the pattern
+			rest = strings.TrimSpace(rest)
+		default:
+			if interval == "" {
+				if _, ok := scheduler.ParseInterval(fields[0]); ok {
+					interval = fields[0]
+					rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+					continue
+				}
+			}
+			command = rest // first non-flag token: everything remaining is the command
+			return
+		}
+	}
+}
+
 // promptPreview shortens a loop prompt for confirmation/notice text.
 func promptPreview(prompt string) string {
 	p := strings.Join(strings.Fields(prompt), " ")
@@ -172,6 +265,112 @@ func (c *Controller) runScheduledTurn(task scheduler.Task) {
 	}
 }
 
+// runCommandAction executes a loopaction task and decides whether to wake the
+// LLM: --no-ai never wakes; an "ai-response: false" marker stays silent; an
+// "ai-response: true" marker forces the wake (overriding the regex); otherwise
+// the output wakes the LLM iff it matches MatchPattern, or always when no
+// pattern is set. Silent fires just re-arm via MarkStarted.
+func (c *Controller) runCommandAction(task scheduler.Task) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		// A fire delivered while the controller is closed never ran its
+		// command; consume the cycle and re-arm to the next slot so the
+		// ticker cannot re-deliver it every second until the rebind.
+		c.scheduler.MarkStarted(task.ID)
+		return
+	}
+	output := c.executeLoopActionCommand(task)
+	if output == "" {
+		c.scheduler.MarkStarted(task.ID) // no output: silent fire
+		return
+	}
+	finalNote := ""
+	if isFinalFire(task, time.Now()) {
+		finalNote = " (expired — no further runs)"
+	}
+	if !task.ActionResponse {
+		// --no-ai: never wake the LLM, but the output is still the user's
+		// signal — surface it in chat instead of dropping it.
+		c.scheduler.MarkStarted(task.ID)
+		c.notice(fmt.Sprintf("⏰ loopaction task %s output: %s%s", task.ID, promptPreview(output), finalNote))
+		return
+	}
+	if strings.Contains(output, "ai-response: false") {
+		c.scheduler.MarkStarted(task.ID) // script opted out of a wake
+		return
+	}
+	matched := true
+	if task.MatchPattern != "" {
+		var err error
+		matched, err = regexp.MatchString(task.MatchPattern, output)
+		if err != nil {
+			c.notice(fmt.Sprintf("loopaction task %s: bad regex %q — %v",
+				task.ID, task.MatchPattern, err))
+			c.scheduler.MarkStarted(task.ID)
+			return
+		}
+	}
+	if !matched && !strings.Contains(output, "ai-response: true") {
+		c.scheduler.MarkStarted(task.ID) // no match, no marker: silent fire
+		return
+	}
+	steerText := fmt.Sprintf("loopaction task %s output:\n%s", task.ID, output)
+	if !c.TrySteer(agent.MidTurnScheduledOutput(task.ID, steerText)) {
+		c.scheduler.MarkStarted(task.ID)
+		return
+	}
+	c.scheduler.MarkStarted(task.ID)
+	c.notice(fmt.Sprintf("⏰ loopaction task %s triggered — output injected%s", task.ID, finalNote))
+}
+
+// isFinalFire reports whether this fire is the task's last: the next cron
+// slot lands at or after the expiry deadline, so the task self-deletes
+// before it can fire again.
+func isFinalFire(t scheduler.Task, now time.Time) bool {
+	if t.ExpiresAt.IsZero() || t.CronExpr == "" {
+		return false
+	}
+	return !t.ExpiresAt.After(scheduler.Next(t.CronExpr, now))
+}
+
+// executeLoopActionCommand runs task.Command via the system shell and returns
+// the combined stdout+stderr. A failed command yields no output (the fire
+// stays silent) and is surfaced as a notice.
+func (c *Controller) executeLoopActionCommand(task scheduler.Task) string {
+	// fireDue invokes this callback synchronously on the ticker goroutine, so
+	// a hung command must time out rather than wedge the scheduler.
+	ctx, cancel := context.WithTimeout(context.Background(), loopActionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", task.Command)
+	cmd.Env = secrets.ProcessEnv() // strip credential env vars from the child
+	setShellKillTree(cmd)
+	cmd.WaitDelay = loopActionWaitDelay
+	cap := &limitedBuffer{}
+	cmd.Stdout = cap
+	cmd.Stderr = cap
+	if err := cmd.Run(); err != nil {
+		c.notice(fmt.Sprintf("loopaction task %s: command error — %v", task.ID, err))
+		return ""
+	}
+	out := cap.String()
+	if cap.Truncated() {
+		// Make boundary-truncated output visible: the LLM (and regex/marker
+		// scans) must know the tail was cut rather than silently absent.
+		out += "\n…[truncated]…"
+	}
+	return out
+}
+
+// loopActionTimeout bounds a single loopaction command run; the callback runs
+// on the scheduler ticker goroutine, so an unbounded command would stall every
+// other scheduled task.
+const loopActionTimeout = 60 * time.Second
+
+// loopActionWaitDelay lets the killed process group exit before Run returns.
+const loopActionWaitDelay = 5 * time.Second
+
 // injectScheduledTask delivers a due scheduled task into the active turn's
 // message queue as a labeled steering message. It reports whether the fire
 // was accepted: true means the running agent will see the prompt at its next
@@ -202,6 +401,12 @@ func (c *Controller) injectScheduledTask(task scheduler.Task) bool {
 // never silently spent. User steers and plain text carry no scheduled-task
 // label and are ignored.
 func (c *Controller) rearmUnappliedScheduledTask(text string) {
+	// A loopaction fire already ran its command; only prompt-based fires may
+	// re-arm. Rearming an output steer would re-execute the side-effecting
+	// command after its output was lost to an abnormal turn end.
+	if strings.HasPrefix(text, agent.MidTurnScheduledDataPrefix) {
+		return
+	}
 	id, ok := agent.ScheduledTaskID(text)
 	if !ok {
 		return
@@ -239,7 +444,11 @@ func (c *Controller) LoopListText() string {
 		}
 		next := v.NextFire
 		if next == "" {
-			next = "paused"
+			if v.Command != "" {
+				next = "held" // foreign session's command task: loaded, never auto-run
+			} else {
+				next = "paused"
+			}
 		}
 		oneShot := ""
 		if v.OneShot {
@@ -248,6 +457,10 @@ func (c *Controller) LoopListText() string {
 		noExpire := ""
 		if v.NoExpire {
 			noExpire = " (no expiry)"
+		}
+		if v.Command != "" {
+			fmt.Fprintf(&b, "  %s  %-14s  next %s%s%s  cmd: %s\n", v.ID, schedule, next, oneShot, noExpire, promptPreview(v.Command))
+			continue
 		}
 		fmt.Fprintf(&b, "  %s  %-14s  next %s%s%s\n", v.ID, schedule, next, oneShot, noExpire)
 	}

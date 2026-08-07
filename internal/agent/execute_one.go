@@ -661,6 +661,9 @@ func (a *Agent) prepareToolExecution(ctx context.Context, plan *toolCallPlan) (t
 	if a.configWriteApprover != nil {
 		cctx = tool.WithConfigWriteApprover(cctx, a.configWriteApprover)
 	}
+	if a.commandTaskApprover != nil {
+		cctx = tool.WithCommandTaskApprover(cctx, a.commandTaskApprover)
+	}
 	if v := a.responseLanguage.Load(); v != nil {
 		if lang, ok := v.(string); ok {
 			cctx = WithResponseLanguagePreference(cctx, lang)

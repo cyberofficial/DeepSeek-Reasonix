@@ -279,6 +279,30 @@ func ParseInterval(s string) (cron string, ok bool) {
 	return "", false
 }
 
+// ParseDurationToken parses an interval-style duration token ("30s", "5m",
+// "2h", "1d") into a time.Duration.
+func ParseDurationToken(s string) (time.Duration, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:len(s)-1])
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	switch s[len(s)-1] {
+	case 's':
+		return time.Duration(n) * time.Second, true
+	case 'm':
+		return time.Duration(n) * time.Minute, true
+	case 'h':
+		return time.Duration(n) * time.Hour, true
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, true
+	}
+	return 0, false
+}
+
 // minuteCron maps an interval in minutes to a cron expression. n divides 60
 // cleanly -> */n; otherwise it rounds to the nearest divisor of 60.
 func minuteCron(n int) string {

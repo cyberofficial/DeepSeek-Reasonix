@@ -3773,6 +3773,9 @@ func approvalToolDetails(toolName string) (name, detail string) {
 	if toolName == control.ManagedConfigWriteApprovalTool {
 		return i18n.M.ApprovalToolLabelConfigWrite, fmt.Sprintf(i18n.M.ToolApprovalSourceFmt, i18n.M.ToolApprovalBuiltIn)
 	}
+	if toolName == control.CommandTaskApprovalTool {
+		return i18n.M.ApprovalToolLabelCommandTask, fmt.Sprintf(i18n.M.ToolApprovalSourceFmt, i18n.M.ToolApprovalBuiltIn)
+	}
 	if server, short, ok := tool.SplitMCPName(toolName); ok {
 		lines := []string{}
 		if strings.EqualFold(short, "understand_image") {
@@ -4743,6 +4746,19 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		text, err := m.ctrl.StartLoop(args)
 		if err != nil {
 			m.notice("loop: " + err.Error())
+		} else {
+			m.notice(text)
+		}
+	case "/loopaction":
+		m.echoLocalCommand(input)
+		if m.ctrl == nil {
+			m.notice("controller not ready")
+			return nil
+		}
+		args := strings.TrimSpace(strings.TrimPrefix(input, "/loopaction"))
+		text, err := m.ctrl.StartLoopAction(args)
+		if err != nil {
+			m.notice("loopaction: " + err.Error())
 		} else {
 			m.notice(text)
 		}

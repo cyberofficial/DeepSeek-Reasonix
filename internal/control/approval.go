@@ -575,7 +575,7 @@ func normalizeToolApprovalMode(mode string) string {
 // narrow operation in interactive or headless mode.
 func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
-	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool:
+	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, CommandTaskApprovalTool:
 		return true
 	default:
 		return false
@@ -588,7 +588,7 @@ func requiresFreshApprovalTool(tool string) bool {
 
 func allowsFreshSessionGrantTool(tool string) bool {
 	switch tool {
-	case SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool:
+	case SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, CommandTaskApprovalTool:
 		return true
 	default:
 		return false

@@ -218,6 +218,101 @@
     }
   },
   {
+    "Name": "cron_create",
+    "Description": "Create a scheduled task. Accepts `cron` — a 5-field cron expression like \"*/5 * * * *\" (or an interval token like \"5m\", \"2h\", \"1d\", rounded to the nearest clean step) — and `prompt`, the text to run when it fires. Set `one_shot: true` for a single fire that deletes itself (reminders). Set `no_expire: true` for an endless loop that never expires (default: tasks expire after 7 days). The task fires between turns while this session is open, at the next matching time; list tasks with cron_list, cancel with cron_delete. The session holds at most 50 tasks.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "cron": {
+          "description": "5-field cron expression (minute hour dom month dow), e.g. \"*/5 * * * *\", or an interval token like \"5m\"/\"2h\"/\"1d\".",
+          "type": "string"
+        },
+        "no_expire": {
+          "description": "Set true for an endless loop that never expires (default: tasks expire after 7 days).",
+          "type": "boolean"
+        },
+        "one_shot": {
+          "description": "Set true for a reminder that fires once and deletes itself.",
+          "type": "boolean"
+        },
+        "prompt": {
+          "description": "The prompt to run when the task fires.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cron",
+        "prompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "cron_create_action",
+    "Description": "Create a scheduled task that runs a host command every interval. Set match_pattern (regex) to only invoke the LLM when output matches; set action_response=false to skip the LLM wake (output still shows in chat). Set expires_in (e.g. 5m/2h/1d) to self-delete the task after that long. The command may emit 'ai-response: true' or 'ai-response: false' on stdout to force or suppress the LLM wake. Use with /loopaction or cron_list/cron_delete.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "action_response": {
+          "description": "Invoke the LLM with output when matched (default true); false = never wake the LLM.",
+          "type": "boolean"
+        },
+        "command": {
+          "description": "The OS command to run (bash script or binary).",
+          "type": "string"
+        },
+        "cron": {
+          "description": "5-field cron expression (minute hour dom month dow), e.g. \"*/5 * * * *\", or an interval token like \"5m\"/\"2h\"/\"1d\".",
+          "type": "string"
+        },
+        "expires_in": {
+          "description": "Expiry token like 5m/2h/1d: the task self-deletes after this long (default: 7-day expiry).",
+          "type": "string"
+        },
+        "match_pattern": {
+          "description": "Regex to test against command output (optional).",
+          "type": "string"
+        },
+        "no_expire": {
+          "description": "Set true for an endless loop that never expires (default: tasks expire after 7 days).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "cron"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "cron_delete",
+    "Description": "Cancel a scheduled task by its ID (listed by cron_list). The task stops firing immediately. Use when asked to cancel a loop or reminder, or when a recurring task has outlived its purpose.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "id": {
+          "description": "The 8-character task ID, e.g. \"a1b2c3d4\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "cron_list",
+    "Description": "List all scheduled tasks in the session: their IDs, schedules (cron expressions or dynamic), next fire times, and prompts. Use it when asked what scheduled tasks exist, or before cancelling one.",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
     "Name": "delete_range",
     "Description": "Delete a contiguous text range from a file using exact start/end text anchors. Each anchor must match exactly one line. Returns unified diff on success. Use for large deletions — smaller changes should use edit_file.",
     "ReadOnly": false,
@@ -1412,6 +1507,28 @@
       "required": [
         "name"
       ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "schedule_wakeup",
+    "Description": "Schedule the next wakeup of a dynamic /loop. Call this after each loop iteration: pass `delay_minutes` (1-60) with a `reason` to check again later, or `stop: true` when the loop's objective is complete and it should end. Without this call, a dynamic loop stays paused after its current iteration.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "delay_minutes": {
+          "description": "Minutes until the next wakeup (1-60). Required unless stop is true.",
+          "type": "number"
+        },
+        "reason": {
+          "description": "Brief reason for the chosen delay, e.g. \"CI still running, recheck shortly\".",
+          "type": "string"
+        },
+        "stop": {
+          "description": "Set true to cancel the pending wakeup and end the loop.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     }
   },
