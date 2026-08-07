@@ -57,6 +57,8 @@
 >
 > **Latest builds:** grab the latest binaries from the build workflow:
 > <https://github.com/cyberofficial/DeepSeek-Reasonix/actions/workflows/build-matrix.yml>
+>
+> [![Build CLI](https://github.com/cyberofficial/DeepSeek-Reasonix/actions/workflows/build-matrix.yml/badge.svg)](https://github.com/cyberofficial/DeepSeek-Reasonix/actions/workflows/build-matrix.yml)
 <!-- FORK-NOTICE-END -->
 
 <br/>
