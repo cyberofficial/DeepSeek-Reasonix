@@ -1,0 +1,57 @@
+name: Build CLI
+
+# Fork build matrix: compile the native CLI for the three 64-bit desktop
+# platforms on every push to master (and PRs). This is a build-only workflow -
+# it never publishes, needs no secrets, and does not touch the official
+# release pipeline (release.yml / release-stable.yml).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            ext: .exe
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags="-s -w" -o "reasonix-${{ matrix.target }}${{ matrix.ext }}" ./cmd/reasonix
+      - name: Smoke test (linux)
+        if: matrix.goos == 'linux'
+        run: ./reasonix-linux-amd64 --help >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reasonix-${{ matrix.target }}
+          path: reasonix-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
