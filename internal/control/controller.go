@@ -541,10 +541,9 @@ type Options struct {
 	SessionTemp *sessiontemp.Manager
 }
 
-// New builds a Controller. A nil Sink is replaced with event.Discard. When the
-// caller did not already provide a goalUsageTee (see NewGoalUsageTee), the
-// public sink is wrapped in one so billable usage can be accounted to Goal
-// budgets; frontends observe the same forwarded stream either way.
+// New builds a Controller. A nil Sink becomes event.Discard; unless the caller
+// already provided a goalUsageTee (NewGoalUsageTee), the sink is wrapped in one
+// so billable usage can be accounted to Goal budgets.
 func New(opts Options) *Controller {
 	sink := opts.Sink
 	if nilutil.IsNil(sink) {
@@ -555,6 +554,7 @@ func New(opts Options) *Controller {
 		usageTee = NewGoalUsageTee(sink).(*goalUsageTee)
 		sink = usageTee
 	}
+	sink = event.Coalesce(sink, event.DefaultStreamDeltaWindow)
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
