@@ -253,6 +253,8 @@ var English = Messages{
 	CmdGoal:             "set or clear the active goal",
 	CmdLoop:             "run a prompt repeatedly on a schedule, or manage scheduled loops",
 	CmdLoopAction:       "run a host command on a schedule and conditionally wake the LLM with its output",
+	CmdLoopDelay:        "create a one-shot countdown trigger that fires a prompt (or, with --action, a host command) after a delay",
+	CmdLoopDelayHint:    "usage: /loopdelay [--action] <duration> <prompt|command> [--match <regex>] [--no-ai], e.g. /loopdelay 2m check upstream for commits",
 	CmdLoopStatus:       "toggle the NEXT JOB status-bar indicator (on, off, or auto)",
 	CmdLoopList:         "list scheduled tasks locally (no model call)",
 	CmdLoopDel:          "delete a scheduled task by ID (no model call)",

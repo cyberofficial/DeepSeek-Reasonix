@@ -151,3 +151,45 @@ func TestLoadHoldsUnattributedCommandTasks(t *testing.T) {
 		t.Errorf("unattributed command task not held: next = %q", views[0].NextFire)
 	}
 }
+
+// TestAddActionAtDelayed verifies a delayed one-shot action: the task is
+// created with a future NextFire, does not fire before it, fires once when
+// due, and deletes itself after delivery.
+func TestAddActionAtDelayed(t *testing.T) {
+	s := New()
+	var fired []Task
+	s.OnCommand(func(t Task) { fired = append(fired, t) })
+	at := time.Now().Add(2 * time.Minute)
+	id, err := s.AddActionAt("", "bash check.sh", "UPSTREAM-HAS-NEW", true, false, true, time.Time{}, at)
+	if err != nil {
+		t.Fatalf("AddActionAt: %v", err)
+	}
+	s.mu.Lock()
+	task := s.tasks[id]
+	future := task.NextFire.After(time.Now())
+	oneShot := task.OneShot
+	s.mu.Unlock()
+	if !future {
+		t.Error("delayed action NextFire is not in the future")
+	}
+	if !oneShot {
+		t.Error("delayed action is not one-shot")
+	}
+	s.fireDue()
+	if len(fired) != 0 {
+		t.Fatalf("fired before the delay = %d, want 0", len(fired))
+	}
+	s.mu.Lock()
+	s.tasks[id].NextFire = time.Now().Add(-time.Second)
+	s.mu.Unlock()
+	s.fireDue()
+	if len(fired) != 1 {
+		t.Fatalf("fired = %d, want 1", len(fired))
+	}
+	s.mu.Lock()
+	_, gone := s.tasks[id]
+	s.mu.Unlock()
+	if gone {
+		t.Error("one-shot action still present after delivery")
+	}
+}

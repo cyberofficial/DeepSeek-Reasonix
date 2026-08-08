@@ -4762,6 +4762,19 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		} else {
 			m.notice(text)
 		}
+	case "/loopdelay":
+		m.echoLocalCommand(input)
+		if m.ctrl == nil {
+			m.notice("controller not ready")
+			return nil
+		}
+		args := strings.TrimSpace(strings.TrimPrefix(input, "/loopdelay"))
+		text, err := m.ctrl.StartLoopDelay(args)
+		if err != nil {
+			m.notice("loopdelay: " + err.Error())
+		} else {
+			m.notice(text)
+		}
 	case "/loopstatus":
 		m.echoLocalCommand(input)
 		m.runLoopStatusCommand(strings.TrimSpace(strings.TrimPrefix(input, "/loopstatus")))

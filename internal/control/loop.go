@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,6 +142,141 @@ func (c *Controller) StartLoopAction(input string) (string, error) {
 	}
 	note += "\ncommand: " + promptPreview(strings.TrimSpace(command))
 	return note, nil
+}
+
+// StartLoopDelay creates a one-shot countdown trigger: the prompt (or, with
+// --action, the host command) fires once after the delay and the task deletes
+// itself. The LLM can keep it going afterwards via schedule_wakeup, turning
+// the one-shot into a loop — or let it end.
+func (c *Controller) StartLoopDelay(input string) (string, error) {
+	sched := c.scheduler
+	if sched == nil {
+		return "", fmt.Errorf("scheduler is unavailable in this session")
+	}
+	delay, action, payload, matchPattern, actionResponse, err := parseLoopDelayArgs(input)
+	if err != nil {
+		return "", err
+	}
+	at := time.Now().Add(delay)
+	var id string
+	if action {
+		id, err = sched.AddActionAt("", payload, matchPattern,
+			true, false, actionResponse, time.Time{}, at)
+	} else {
+		id, err = sched.Add("", payload, at, true, false)
+	}
+	if err != nil {
+		return "", err
+	}
+	kind := "trigger"
+	if action {
+		kind = "action trigger"
+	}
+	note := fmt.Sprintf("%s set — task %s fires in %s (%s)", kind, id, formatDuration(delay), at.Format("15:04:05"))
+	if action && matchPattern != "" {
+		note += fmt.Sprintf(", wake LLM on match: %q", matchPattern)
+	}
+	return note, nil
+}
+
+// parseLoopDelayArgs splits /loopdelay into an optional --action flag, a
+// duration, and the payload (prompt, or command in action mode). The duration
+// is a leading Go token (2m, 90s, 1h30m) or a natural phrase ("in 2 minutes").
+// --match <re> and --no-ai apply only in action mode.
+func parseLoopDelayArgs(input string) (
+	delay time.Duration, action bool, payload, matchPattern string,
+	actionResponse bool, err error,
+) {
+	rest := strings.TrimSpace(input)
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "in"))
+	// Flags may lead the duration: "--action 90s ..." and "90s --action ..."
+	// both parse.
+	actionResponse = true
+	fields := strings.Fields(rest)
+	for len(fields) > 0 && (fields[0] == "--action" || fields[0] == "--no-ai") {
+		if fields[0] == "--action" {
+			action = true
+		} else {
+			actionResponse = false
+		}
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		fields = strings.Fields(rest)
+	}
+	if len(fields) == 0 {
+		return 0, false, "", "", true, fmt.Errorf("usage: /loopdelay [--action] <duration> <prompt|command>")
+	}
+	delay, consumed, ok := parseNaturalDuration(fields)
+	if !ok || delay <= 0 {
+		return 0, false, "", "", true, fmt.Errorf("loopdelay: expected a duration like 2m, 90s, or 'in 2 minutes'")
+	}
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, consumed))
+	fields = strings.Fields(rest)
+	for len(fields) > 0 {
+		switch fields[0] {
+		case "--action":
+			action = true
+		case "--no-ai":
+			actionResponse = false
+		case "--match":
+			if len(fields) < 2 {
+				return 0, false, "", "", true, fmt.Errorf("loopdelay: --match needs a regex")
+			}
+			matchPattern = fields[1]
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, "--match "+fields[1]))
+			fields = strings.Fields(rest)
+			continue
+		default:
+			payload = strings.TrimSpace(rest)
+			if payload == "" {
+				return 0, false, "", "", true, fmt.Errorf("loopdelay: a prompt or command is required")
+			}
+			return delay, action, payload, matchPattern, actionResponse, nil
+		}
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		fields = strings.Fields(rest)
+	}
+	return 0, false, "", "", true, fmt.Errorf("loopdelay: a prompt or command is required")
+}
+
+// parseNaturalDuration reads a duration from the leading fields: a Go token
+// (2m, 90s) or a natural phrase (2 minutes, 1 hour). It returns the duration
+// and the exact substring consumed, for the caller to strip.
+func parseNaturalDuration(fields []string) (time.Duration, string, bool) {
+	if len(fields) == 0 {
+		return 0, "", false
+	}
+	if d, err := time.ParseDuration(fields[0]); err == nil && d > 0 {
+		return d, fields[0], true
+	}
+	if len(fields) < 2 {
+		return 0, "", false
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil || n <= 0 {
+		return 0, "", false
+	}
+	unit := strings.ToLower(strings.TrimSuffix(fields[1], "s"))
+	var mult time.Duration
+	switch unit {
+	case "minute":
+		mult = time.Minute
+	case "hour":
+		mult = time.Hour
+	case "second":
+		mult = time.Second
+	default:
+		return 0, "", false
+	}
+	return time.Duration(n) * mult, fields[0] + " " + fields[1], true
+}
+
+// formatDuration renders a delay for notices, e.g. "2m0s" as "2m".
+func formatDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		return strings.TrimSuffix(s, "0s")
+	}
+	return s
 }
 
 // parseLoopActionArgs splits /loopaction into flags, an optional interval, and
@@ -318,7 +454,16 @@ func (c *Controller) runCommandAction(task scheduler.Task) {
 	}
 	steerText := fmt.Sprintf("loopaction task %s output:\n%s", task.ID, output)
 	if !c.TrySteer(agent.MidTurnScheduledOutput(task.ID, steerText)) {
-		c.scheduler.MarkStarted(task.ID)
+		// Idle session: no running turn can consume the steer, so run the
+		// output as a full parked turn instead of dropping the fire.
+		result := c.runGuardedOrPark(func(ctx context.Context) error {
+			c.scheduler.MarkStarted(task.ID)
+			c.notice(fmt.Sprintf("⏰ loopaction task %s running — output delivered", task.ID))
+			return c.runGoalLoopWithRaw(ctx, steerText, steerText)
+		})
+		if result != turnStarted && result != turnParked {
+			c.scheduler.ReleaseFiring(task.ID)
+		}
 		return
 	}
 	c.scheduler.MarkStarted(task.ID)

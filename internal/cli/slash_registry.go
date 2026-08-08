@@ -61,6 +61,7 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/goal", insert: "/goal ", hint: i18n.M.CmdGoal, descend: true},
 		{name: "/loop", insert: "/loop ", hint: i18n.M.CmdLoop, showInHelp: true},
 		{name: "/loopaction", insert: "/loopaction ", hint: i18n.M.CmdLoopAction, showInHelp: true},
+		{name: "/loopdelay", insert: "/loopdelay ", hint: i18n.M.CmdLoopDelay, showInHelp: true},
 		{name: "/loopstatus", insert: "/loopstatus ", hint: i18n.M.CmdLoopStatus, showInHelp: true},
 		{name: "/looplist", insert: "/looplist", hint: i18n.M.CmdLoopList, showInHelp: true},
 		{name: "/loopdel", insert: "/loopdel ", hint: i18n.M.CmdLoopDel, showInHelp: true},

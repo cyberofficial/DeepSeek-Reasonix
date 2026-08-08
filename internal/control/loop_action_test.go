@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
 	"reasonix/internal/scheduler"
+	"reasonix/internal/tool"
 )
 
 func TestParseLoopActionArgs(t *testing.T) {
@@ -171,6 +174,43 @@ func TestRearmSkipsDataFramedOutput(t *testing.T) {
 	_, after, ok = sched.NextDue()
 	if !ok || time.Since(after) > 5*time.Second {
 		t.Errorf("prompt fire did not re-arm (next=%v, ok=%v); want ~now", after, ok)
+	}
+}
+
+// TestRunCommandActionIdleDeliversOutputAsTurn verifies the idle fallback: a
+// loopaction fire whose steer finds no running turn (TrySteer requires an
+// active turn) must run the output as a full parked turn instead of silently
+// dropping it — the regression the one-shot 30s trigger hit: the task fired
+// and self-deleted with no visible output.
+func TestRunCommandActionIdleDeliversOutputAsTurn(t *testing.T) {
+	prov := &scriptedTurns{turns: [][]provider.Chunk{{
+		{Type: provider.ChunkText, Text: "ok"},
+		{Type: provider.ChunkDone},
+	}}}
+	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"),
+		agent.Options{ContextWindow: 1_000_000}, event.Discard)
+	sched := scheduler.New()
+	c := New(Options{Runner: ag, Executor: ag, Scheduler: sched})
+	id, err := sched.AddAction("", `bash -c "echo hello"`, "", true, false, true, time.Time{})
+	if err != nil {
+		t.Fatalf("AddAction: %v", err)
+	}
+	task := scheduler.Task{ID: id, Command: `bash -c "echo hello"`, OneShot: true, ActionResponse: true}
+	c.runCommandAction(task)
+	waitIdle(t, c)
+	defer c.Close()
+	found := false
+	for _, m := range ag.Session().Messages {
+		if strings.Contains(m.Content, "loopaction task "+id+" output:") && strings.Contains(m.Content, "hello") {
+			found = true
+		}
+	}
+	if !found {
+		joined := ""
+		for _, m := range ag.Session().Messages {
+			joined += m.Content + "\n"
+		}
+		t.Errorf("idle fire output not delivered as a turn; session:\n%s", joined)
 	}
 }
 

@@ -246,6 +246,8 @@ type Messages struct {
 	CmdGoal             string // /goal
 	CmdLoop             string // /loop
 	CmdLoopAction       string // /loopaction
+	CmdLoopDelay        string // /loopdelay
+	CmdLoopDelayHint    string // /loopdelay usage hint
 	CmdLoopStatus       string // /loopstatus
 	CmdLoopList         string // /looplist
 	CmdLoopDel          string // /loopdel

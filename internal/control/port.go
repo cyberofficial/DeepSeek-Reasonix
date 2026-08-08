@@ -242,6 +242,7 @@ type Settings interface {
 type Scheduling interface {
 	StartLoop(input string) (string, error)
 	StartLoopAction(input string) (string, error)
+	StartLoopDelay(input string) (string, error)
 	Scheduler() *scheduler.Scheduler
 	LoopListText() string
 	LoopDeleteText(id string) string

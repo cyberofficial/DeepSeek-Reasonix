@@ -27,6 +27,7 @@
 | `read_file` | true | 按可分页的行号格式读取文本文件。 |
 | `schedule_wakeup` | false | 为动态 /loop 排定下次唤醒。每次循环迭代后调用：传入 `delay_minutes`（1-60）和 `reason` 稍后再查，或 `stop: true` 在目标完成时结束循环。不调用时，动态循环在当前迭代后保持暂停。 |
 | `todo_write` | true | 记录并替换当前工作的结构化任务列表。 |
+| `trigger_delay` | false | 创建一次性倒计时触发器，在延迟后触发一次（例如“30 秒后检查”）。传 `prompt` 时，触发时向 LLM 传递该提示词；传 `command` 时，主机运行该命令，仅当输出匹配 `match_pattern`（或 `action_response=true`）时才唤醒 LLM。触发后任务自动删除；LLM 可调用 `schedule_wakeup` 延续为循环。配合 `cron_list`/`cron_delete` 使用。 |
 | `wait` | true | 等待后台 job 完成并返回最终输出。 |
 | `web_fetch` | true | 通过 HTTP/HTTPS 获取 URL 文本内容。 |
 | `write_file` | false | 写入文件内容，必要时创建父目录。 |

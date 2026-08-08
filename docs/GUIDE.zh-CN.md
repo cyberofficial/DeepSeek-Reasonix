@@ -508,6 +508,7 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `/loopstatus [on|off|auto]` | 切换 `NEXT JOB` 状态栏指示器 | 默认 `auto`：仅在有待触发的排定任务时显示。`on` 始终显示（无任务时显示 `none`）；`off` 即使有任务也隐藏。裸 `/loopstatus` 显示当前模式。 |
 | `/looplist` | 本地列出当前工作目录的排定任务（不消耗模型调用） | 显示每个任务的 ID、计划（cron 或动态）、下次触发时间，以及一次性/永不过期标记。 |
 | `/loopdel <id>` | 按 ID 本地删除排定任务（不消耗模型调用） | `/loopdel 3f9a2c11` 取消该任务；会提示删除成功或不存在该任务。 |
+| `/loopdelay [--action] <时长> <提示词或命令>` | 创建一次性倒计时触发器，延迟后触发一次 | `/loopdelay 2m 检查上游提交并报告` 会在 2 分钟后触发一次提示词并删除任务；`/loopdelay --action 2m --match UPSTREAM-HAS-NEW bash check.sh` 会在 2 分钟后运行命令，仅当输出匹配正则时才唤醒 LLM。时长支持 Go 记法（`2m`、`90s`、`1h30m`）或自然短语（`in 5 minutes`）。触发后 LLM 可调用 `schedule_wakeup` 将其延续为动态循环，或就此结束。 |
 | `/migrate`、`/migrate --from <旧目录>` | 重试旧数据迁移，或从指定 v0.x 来源导入 sessions | Windows v0.52 自定义安装/数据目录用 `--from`；该形式只导入 sessions。详见[配置路径](./CONFIG_PATHS.zh-CN.md)。 |
 
 选择器与审批：

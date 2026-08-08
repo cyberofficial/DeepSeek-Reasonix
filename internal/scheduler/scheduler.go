@@ -309,8 +309,21 @@ func (s *Scheduler) Add(cronExpr, prompt string, nextFire time.Time, oneShot, no
 // onCommand callback (the Controller's runCommandAction) instead of onFire,
 // so the host command runs and the LLM is only woken when the output needs a
 // decision. Recurrence, one-shot deletion, noExpire, and the task limit all
-// match Add.
-func (s *Scheduler) AddAction(cronExpr, command, matchPattern string, oneShot, noExpire, actionResponse bool, expiresAt time.Time) (string, error) {
+// match Add. An empty cronExpr fires immediately (dynamic loop iteration).
+func (s *Scheduler) AddAction(cronExpr, command, matchPattern string,
+	oneShot, noExpire, actionResponse bool, expiresAt time.Time,
+) (string, error) {
+	return s.AddActionAt(cronExpr, command, matchPattern,
+		oneShot, noExpire, actionResponse, expiresAt, time.Now())
+}
+
+// AddActionAt is AddAction with an explicit nextFire for dynamic tasks: a
+// one-shot command task scheduled for now+delay fires once after the
+// countdown instead of immediately (empty cronExpr). Recurring tasks ignore
+// nextFire and re-derive their slot from the cron expression.
+func (s *Scheduler) AddActionAt(cronExpr, command, matchPattern string,
+	oneShot, noExpire, actionResponse bool, expiresAt, nextFire time.Time,
+) (string, error) {
 	id, err := newTaskID()
 	if err != nil {
 		return "", err
@@ -320,7 +333,6 @@ func (s *Scheduler) AddAction(cronExpr, command, matchPattern string, oneShot, n
 		s.mu.Unlock()
 		return "", ErrTaskLimit
 	}
-	nextFire := time.Now() // empty cronExpr fires immediately, like Add(time.Now())
 	if cronExpr != "" {
 		nextFire = Next(cronExpr, time.Now())
 	}

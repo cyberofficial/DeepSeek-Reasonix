@@ -544,6 +544,14 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		} else {
 			c.notice(text)
 		}
+	case "/loopdelay":
+		args := strings.TrimSpace(strings.TrimPrefix(trimmed, "/loopdelay"))
+		text, err := c.StartLoopDelay(args)
+		if err != nil {
+			c.notice("loopdelay: " + err.Error())
+		} else {
+			c.notice(text)
+		}
 	case "/looplist":
 		c.notice(c.LoopListText())
 	case "/loopdel":

@@ -624,6 +624,7 @@ Mode and display shortcuts:
 | `/loopstatus [on|off|auto]` | Toggles the `NEXT JOB` status-bar indicator | Default `auto`: shown only while a scheduled task is pending. `on` always shows it (`none` when nothing pending); `off` hides it even while tasks run. A bare `/loopstatus` reports the current mode. |
 | `/looplist` | Lists the working directory's scheduled tasks locally (no model call) | Shows each task's ID, schedule (cron or dynamic), next fire, and one-shot/no-expiry markers. |
 | `/loopdel <id>` | Deletes a scheduled task by ID locally (no model call) | `/loopdel 3f9a2c11` cancels that task; confirmations report success or that no such task exists. |
+| `/loopdelay [--action] <duration> <prompt or command>` | Creates a one-shot countdown trigger that fires once after a delay | `/loopdelay 2m check upstream for commits and report` fires the prompt once in 2 minutes and deletes the task; `/loopdelay --action 2m --match UPSTREAM-HAS-NEW bash check.sh` runs the command once in 2 minutes and wakes the LLM only if the output matches the regex. Durations accept Go tokens (`2m`, `90s`, `1h30m`) or natural phrases (`in 5 minutes`). After the fire the LLM can call `schedule_wakeup` to keep it going as a dynamic loop, or let it end. |
 | `/migrate`, `/migrate --from <legacy-dir>` | Retries legacy migration or imports sessions from a chosen v0.x source | Use `--from` for custom Windows v0.52 install/data directories; it imports sessions only. See [Configuration paths](./CONFIG_PATHS.md). |
 
 Picker and approval shortcuts:

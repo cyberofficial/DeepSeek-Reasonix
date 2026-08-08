@@ -254,6 +254,8 @@ var Chinese = Messages{
 	CmdGoal:             "设置或清除当前目标",
 	CmdLoop:             "按计划重复运行提示词，或管理已安排的循环",
 	CmdLoopAction:       "按计划运行主机命令，并在条件匹配时触发 LLM",
+	CmdLoopDelay:        "创建一个一次性倒计时触发器，在延迟后触发提示词（或配合 --action 触发主机命令）",
+	CmdLoopDelayHint:    "用法: /loopdelay [--action] <时长> <提示词|命令> [--match <正则>] [--no-ai]，例如 /loopdelay 2m 检查上游提交",
 	CmdLoopStatus:       "切换 NEXT JOB 状态栏指示器（on、off 或 auto）",
 	CmdLoopList:         "本地列出已排定的任务（不消耗模型调用）",
 	CmdLoopDel:          "按 ID 删除已排定的任务（不消耗模型调用）",
