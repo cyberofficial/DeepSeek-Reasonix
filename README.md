@@ -47,13 +47,24 @@
 <!-- FORK-NOTICE-BEGIN -->
 > [!NOTE]
 > **This repository is a fork** (`cyberofficial/DeepSeek-Reasonix`) of
-> [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) (upstream, `main-v2`).
-> It exists to develop the **scheduling / loop feature set** as a dedicated initiative:
-> the session-scoped `/loop` command, cron tools (`cron_create`, `cron_list`,
-> `cron_delete`, `schedule_wakeup`), mid-turn steering of scheduled prompts,
-> per-directory scheduled-task persistence (`<workspace>/.reasonix/scheduled-tasks.json`),
-> and the `NEXT JOB` status-bar indicator. Everything upstream offers remains available;
-> this fork adds the scheduler work on top and tracks upstream `main-v2` continuously.
+> [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) (upstream, `main-v2`),
+> tracking upstream `main-v2` continuously. It exists to develop the
+> **scheduling / loop feature set** as a dedicated initiative — everything
+> upstream offers remains available, and this fork adds:
+>
+> - `/loop [interval] [prompt]` — run a prompt on a cron schedule, or as a
+>   dynamic loop the agent re-arms with `schedule_wakeup` (`--forever` for an
+>   endless loop; tasks expire after 7 days by default)
+> - `/loopdelay [--action] <duration> <prompt|command>` — one-shot countdown
+>   triggers that fire once after a delay, with `--match`/`--no-ai` options
+>   for command-based triggers
+> - cron tools: `cron_create`, `cron_create_action`, `cron_list`,
+>   `cron_delete`, `schedule_wakeup`, `trigger_delay`
+> - mid-turn steering of scheduled prompts, per-directory task persistence
+>   (`<workspace>/.reasonix/scheduled-tasks.json`), and the `NEXT JOB`
+>   status-bar indicator
+>
+> Full documentation: [docs/GUIDE.md](docs/GUIDE.md#slash-commands).
 >
 > **Latest builds:** grab the latest binaries from the build workflow:
 > <https://github.com/cyberofficial/DeepSeek-Reasonix/actions/workflows/build-matrix.yml>
