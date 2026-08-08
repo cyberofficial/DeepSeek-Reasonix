@@ -325,7 +325,7 @@ const (
 
 // ExtensionSurfacePayload carries one extension sidecar's structured UI
 // contribution for the ExtensionSurface / ExtensionStatus kinds. The structs
-// mirror the Extension Protocol v1 UI payload DTOs field-for-field so any
+// mirror the Extension Protocol v2 UI payload DTOs field-for-field so any
 // frontend can render them with native widgets; the protocol stays
 // structured-only (no HTML/CSS/JS/URLs). All user-visible strings are already
 // credential-redacted by the host UI hub before the event is emitted. Exactly
