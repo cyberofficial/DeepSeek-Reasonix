@@ -1683,6 +1683,39 @@
     }
   },
   {
+    "Name": "trigger_delay",
+    "Description": "Create a one-shot countdown trigger that fires once after a delay (e.g. \"check in 30s\"). With prompt, the LLM receives the prompt at fire time; with command, the host runs the command and the LLM is woken only if the output matches match_pattern (or action_response=true). The task deletes itself after firing; the LLM can continue it with schedule_wakeup. Use with cron_list/cron_delete.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "action_response": {
+          "description": "Invoke the LLM with command output when matched (default true).",
+          "type": "boolean"
+        },
+        "command": {
+          "description": "The OS command to run when the trigger fires (alternative to prompt).",
+          "type": "string"
+        },
+        "delay": {
+          "description": "How long until the single fire, e.g. \"30s\", \"2m\", \"1h30m\".",
+          "type": "string"
+        },
+        "match_pattern": {
+          "description": "Regex to test against command output (optional).",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The prompt to deliver when the trigger fires.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delay"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "Name": "update_goal",
     "Description": "Report this turn's disposition for the active goal. Call it at the end of every goal turn instead of using prose markers: `continue` (work is ongoing — give a concrete next_action), `complete` (the request is fully done, output format and constraints satisfied, and verification was attempted or reported unavailable), or `blocked` (only the user can unblock: missing user-only information, an irreversible/externally visible operation, or changed scope). The host validates your claim against Delivery acceptance criteria and decides whether to continue automatically. Fields: `status` (required, one of continue|complete|blocked), `reason` (required for continue and blocked, optional for complete), `next_action` (optional concrete next step; recommended for continue).",
     "ReadOnly": true,

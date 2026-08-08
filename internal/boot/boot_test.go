@@ -2227,6 +2227,7 @@ func defaultFullBootToolNames() []string {
 		"slash_command",
 		"task",
 		"todo_write",
+		"trigger_delay",
 		"update_goal",
 		"wait",
 		"web_fetch",
