@@ -63,6 +63,7 @@ reasoning_language = "auto"      # 可见思考过程语言：auto|zh|en
 # max_subagent_concurrency = 6        # 会话级子代理总并发（task/fleet/skills）
 # max_parallel_writers = 3            # 互不重叠 write_paths 时的并行写入上限
 tool_result_snip_ratio = 0.6       # 在摘要 compaction 前先缩短旧工具输出
+# context_editing = "native"       # 仅官方 Anthropic 端点显式启用；默认 local
 
 [[providers]]
 name        = "deepseek-flash"
@@ -524,12 +525,7 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `/theme [auto|light|dark|style]` | 查看或切换 CLI 主题 | 不带参数会列出背景模式和命名配色。选择会保存到用户配置；单次运行可用 `REASONIX_THEME` 和 `REASONIX_THEME_STYLE` 覆盖。 |
 | `Ctrl+O` | 切换详细 reasoning 显示 | 也可通过 `/verbose` 使用。 |
 | `Ctrl+B` | 展开或收起较长 shell 输出 | 较长 shell 输出的提示行也可点击；全屏 TUI 开启鼠标接管时，文本选区由应用内处理。 |
-| `/goal <目标>`、`/goal --research <目标>`、`/goal --simple <目标>`、`/goal status`、`/goal pause`、`/goal resume`、`/goal clear` | 启动、查看、暂停、恢复或清除 Goal | Goal 不进入任何快捷键循环；显式启动 Goal 后，明显长周期目标会自动启用 AutoResearch。Goal 自动选择简单、写入或研究轮次预算。 |
-| `/loop [间隔] [提示词]` | 按计划重复运行提示词，或管理已安排的循环 | `/loop 5m 检查部署` 每 5 分钟运行一次提示词；`/loop <提示词>` 运行动态循环，由模型通过 `schedule_wakeup` 决定每次延迟；裸 `/loop` 使用 `loop.md` 或内置维护提示词。前缀 `--forever`（如 `/loop --forever 5m 检查部署`）可创建永不过期的循环（默认任务 7 天后过期）。回合进行中触发的任务会把提示词以带标记的转向消息（`⏰ scheduled task <id>:`）注入当前回合，而非打断它；空闲时触发则作为完整回合运行。任务按工作目录持久化在 `<workspace>/.reasonix/scheduled-tasks.json` - 该文件夹下启动的所有会话共享同一份文件，`/new` 和 `/clear` 不会删除。固定循环可让模型取消（`cron_delete`）；动态循环按 `Esc` 暂停，再按一次 `Esc` 全部取消。状态栏以 `NEXT JOB <id> <时间>` 显示下次触发时间。 |
-| `/loopstatus [on|off|auto]` | 切换 `NEXT JOB` 状态栏指示器 | 默认 `auto`：仅在有待触发的排定任务时显示。`on` 始终显示（无任务时显示 `none`）；`off` 即使有任务也隐藏。裸 `/loopstatus` 显示当前模式。 |
-| `/looplist` | 本地列出当前工作目录的排定任务（不消耗模型调用） | 显示每个任务的 ID、计划（cron 或动态）、下次触发时间，以及一次性/永不过期标记。 |
-| `/loopdel <id>` | 按 ID 本地删除排定任务（不消耗模型调用） | `/loopdel 3f9a2c11` 取消该任务；会提示删除成功或不存在该任务。 |
-| `/loopdelay [--action] <时长> <提示词或命令>` | 创建一次性倒计时触发器，延迟后触发一次 | `/loopdelay 2m 检查上游提交并报告` 会在 2 分钟后触发一次提示词并删除任务；`/loopdelay --action 2m --match UPSTREAM-HAS-NEW bash check.sh` 会在 2 分钟后运行命令，仅当输出匹配正则时才唤醒 LLM。时长支持 Go 记法（`2m`、`90s`、`1h30m`）或自然短语（`in 5 minutes`）。触发后 LLM 可调用 `schedule_wakeup` 将其延续为动态循环，或就此结束。 |
+| `/goal <目标>`、`/goal status`、`/goal pause`、`/goal resume`、`/goal clear` | 启动、查看、暂停、恢复或清除 Goal | Goal 自动选择简单、写入或研究轮次预算。 |
 | `/migrate`、`/migrate --from <旧目录>` | 重试旧数据迁移，或从指定 v0.x 来源导入 sessions | Windows v0.52 自定义安装/数据目录用 `--from`；该形式只导入 sessions。详见[配置路径](./CONFIG_PATHS.zh-CN.md)。 |
 
 选择器与审批：
@@ -762,7 +758,7 @@ RPC 调用。两者都可按服务器覆盖。
 
 ## 斜杠命令
 
-交互式 `reasonix` 会话里，内置命令（`/compact`、`/new`、`/clear`、`/rewind`、`/tree`、`/branch`、`/switch`、`/todo`、`/model`、`/work-mode`、`/mcp`、`/skills`、`/hooks`、`/memory`、`/goal`、`/loop`、`/loopstatus`、`/output-style`、`/sandbox`、`/language`、`/reasoning-language`、`/help`）在本地执行——`/help` 可列出全部。
+交互式 `reasonix` 会话里，内置命令（`/compact`、`/context`、`/new`、`/clear`、`/rewind`、`/tree`、`/branch`、`/switch`、`/todo`、`/model`、`/work-mode`、`/mcp`、`/skills`、`/hooks`、`/memory`、`/goal`、`/output-style`、`/sandbox`、`/language`、`/reasoning-language`、`/help`）在本地执行——`/help` 可列出全部。
 内置 **Skill**（如 `/init`、`/explore`、`/test`、`/reasonix-guide`）也会出现在斜杠菜单，
 并可通过 `run_skill` 调用（正文按需加载；只有索引行进入缓存稳定前缀）。配置或能力排障时
 用 `/reasonix-guide`，它会引导运行 `reasonix doctor capabilities`（见

@@ -1,6 +1,26 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestCurrentBuiltInAnthropicCompatibleProvidersRemainLocalByCapability(t *testing.T) {
+	var entries []ProviderEntry
+	entries = append(entries, Default().Providers...)
+	for _, preset := range CuratedProviderPresets() {
+		entries = append(entries, preset.Entries...)
+	}
+	for _, entry := range entries {
+		if entry.Kind != "anthropic" {
+			continue
+		}
+		root := strings.TrimSuffix(strings.TrimRight(entry.BaseURL, "/"), "/v1")
+		if strings.EqualFold(root, "https://api.anthropic.com") {
+			t.Fatalf("built-in provider %q unexpectedly targets official Anthropic; add an explicit native-capability UX before enabling it", entry.Name)
+		}
+	}
+}
 
 func TestCuratedProviderPresetsCoverRequestedProviders(t *testing.T) {
 	wantIDs := []string{

@@ -4571,6 +4571,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		// guidance steering what the summary keeps.
 		focus := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
 		return func() tea.Msg { return compactDoneMsg{err: m.ctrl.Compact(context.Background(), focus)} }
+	case "/context":
+		return m.showContextReport(input)
 	case "/new":
 		m.echoLocalCommand(input)
 		if err := m.ctrl.NewSession(); err != nil {
@@ -4786,14 +4788,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			m.notice(m.ctrl.LoopDeleteText(strings.TrimSpace(strings.TrimPrefix(input, "/loopdel"))))
 		}
 	case "/remember":
-		note := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
-		if note == "" {
-			m.notice("nothing to remember")
-		} else if path, err := m.ctrl.QuickAdd(memory.ScopeProject, note); err != nil {
-			m.notice("memory: " + err.Error())
-		} else {
-			m.notice("remembered → " + path)
-		}
+		m.rememberNote(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))
 	case "/quit", "/exit":
 		return shutdownNow
 	case "/copy":
