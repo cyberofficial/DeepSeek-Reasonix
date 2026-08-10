@@ -3393,6 +3393,51 @@ a[href] {
   margin-left: auto;
   margin-right: auto;
 }
+
+/* ── Virtual transcript rows ─────────────────────────────────────── */
+/* The transcript content is a single flat virtual list: the sizer carries the
+   total height, rows are absolutely positioned by the virtualizer. The row
+   wrapper forms a block formatting context (absolute positioning), so child
+   margins stay inside the measured height; the top margin moves to the row's
+   bottom margin only, preserving the old collapsed-sibling spacing. */
+.transcript__virtual-sizer {
+  position: relative;
+  width: 100%;
+}
+.transcript > .transcript__virtual-sizer {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+}
+.transcript__row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+.transcript__row > * {
+  max-width: var(--maxw);
+  margin-left: auto;
+  margin-right: auto;
+}
+.transcript__row > *:first-child {
+  margin-top: 0;
+}
+.history-preview__body .transcript__row > * {
+  max-width: none;
+}
+/* Offscreen rows are unmounted by the virtualizer, so content-visibility
+   culling is redundant inside rows — and skipping it keeps offsetHeight
+   measurements exact instead of contain-intrinsic-size placeholders. */
+.transcript__row .msg,
+.transcript__row .turn-collapse,
+.transcript__row .tool,
+.transcript__row .process-card,
+.transcript__row .readonly-batch,
+.transcript__row .tool-group {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
 .transcript__jump-bottom {
   --wails-draggable: no-drag;
   position: absolute;
@@ -3475,81 +3520,6 @@ a[href] {
 .warm-collapse:disabled {
   cursor: wait;
   opacity: 0.65;
-}
-.warm-turn {
-  max-width: var(--maxw);
-  margin: 6px auto;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-elev);
-  overflow: hidden;
-  transition: border-color 0.12s;
-}
-.warm-turn:hover {
-  border-color: var(--border);
-}
-.warm-turn__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: none;
-  background: transparent;
-  color: var(--fg-dim);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.warm-turn__head:hover {
-  background: var(--bg-soft);
-  color: var(--fg);
-}
-.warm-turn__chevron {
-  flex-shrink: 0;
-  color: var(--fg-faint);
-  transition: transform 0.15s;
-}
-.warm-turn__chevron--open {
-  transform: rotate(90deg);
-}
-.warm-turn__preview {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-  font-weight: 500;
-}
-.warm-turn__meta {
-  flex-shrink: 0;
-  color: var(--fg-faint);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.warm-turn__assistant {
-  padding: 0 12px 10px 41px;
-  color: var(--fg-faint);
-  font-size: 12px;
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.warm-turn__body {
-  padding: 4px 0;
-}
-.warm-turn__content {
-  overflow: hidden;
-}
-.warm-turn__body > * {
-  max-width: var(--maxw-inner);
-  margin-left: auto;
-  margin-right: auto;
 }
 
 /* ── Notice line (replaces full ProcessCard for notices) ─────────── */
@@ -3764,7 +3734,7 @@ a[href] {
   margin: 2px auto;
 }
 
-/* expanded padding — parent --open class drives it while GSAP handles height */
+/* Expanded padding — the parent --open class drives it while native motion handles height. */
 .readonly-batch--open .readonly-batch__body,
 .turn-collapse--open .turn-collapse__body,
 .tool--open .tool__body {
@@ -5143,6 +5113,40 @@ button.reasoning-summary:focus-visible {
 .md th {
   background: var(--bg-soft);
   font-weight: var(--font-weight-strong);
+}
+/* Row-virtualized oversized markdown tables (see MarkdownTable.tsx): the
+   wrapper owns vertical scroll, the thead stays pinned, and body rows are
+   absolutely positioned by the virtualizer. Flex rows keep header/body cells
+   column-aligned without a full-table layout pass. */
+.md-table-virtual {
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.md-table-virtual table {
+  display: block;
+  margin: 0;
+  overflow: visible;
+  border-collapse: collapse;
+  width: 100%;
+}
+.md-table-virtual thead {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-local-raised);
+  background: var(--bg-soft);
+}
+.md-table-virtual tr {
+  display: flex;
+  width: 100%;
+}
+.md-table-virtual th,
+.md-table-virtual td {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .md-status-list {
   display: none;
@@ -7868,9 +7872,15 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg-faint);
   /* One line, always: without this a narrow window squeezes the flex items and
      CJK text breaks one character per line. The metric chips keep their width
-     (flex-shrink: 0) and only the model label ellipsizes to absorb the squeeze. */
+     (flex-shrink: 0) and only the model label ellipsizes to absorb the squeeze.
+     Horizontal overflow is scrollable via mouse wheel (scrollbar hidden). */
   white-space: nowrap;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.statusbar::-webkit-scrollbar {
+  display: none;
 }
 .statusbar > * {
   flex-shrink: 0;
@@ -7897,6 +7907,15 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--fg-faint) 50%, transparent);
   font-family: var(--font-mono);
   font-weight: 400;
+}
+/* shorter separator for intra-item splits like "hit X | miss Y" */
+.statusbar__cache-sep {
+  margin: 0 4px;
+  color: color-mix(in srgb, var(--fg-faint) 50%, transparent);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 0.75em;
+  line-height: 1;
 }
 .statusbar__group .tooltip-trigger {
   display: inline-flex;
@@ -13562,7 +13581,7 @@ body > .mermaid-diagram--fullscreen {
   margin-bottom: 8px;
 }
 .cap-search .mem-input {
-  width: 100%;
+	width: 100%;
 }
 .cap-sources {
   display: flex;
@@ -13572,14 +13591,22 @@ body > .mermaid-diagram--fullscreen {
   padding: 2px 0 8px;
   border-bottom: 1px solid var(--border-soft);
 }
-.cap-sources--expanded {
-  padding-bottom: 10px;
-}
 .cap-sources__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cap-sources__head:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 3px;
 }
 .cap-sources__copy {
   min-width: 0;
@@ -13603,15 +13630,16 @@ body > .mermaid-diagram--fullscreen {
   font-size: 11.5px;
   line-height: 1.3;
 }
-.cap-sources__actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: flex-end;
+.cap-sources__chevron {
+  color: var(--fg-dim);
+  transition: transform 140ms ease;
 }
-.cap-sources__actions .btn {
-  min-height: 24px;
-  padding-inline: 9px;
+.cap-sources__head:hover .cap-sources__chevron,
+.cap-sources__head:focus-visible .cap-sources__chevron {
+  color: var(--fg);
+}
+.cap-sources__chevron--expanded {
+  transform: rotate(180deg);
 }
 .cap-sources__manage {
   display: flex;
@@ -13638,8 +13666,8 @@ body > .mermaid-diagram--fullscreen {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
-  gap: 9px;
-  padding: 8px 9px;
+  gap: 8px;
+  padding: 7px 9px;
   border: 1px solid var(--border-soft);
   border-radius: 7px;
   background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
@@ -13656,10 +13684,12 @@ body > .mermaid-diagram--fullscreen {
 .cap-source__head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
 .cap-source__label {
+  flex: 1 1 220px;
   overflow: hidden;
   min-width: 0;
   color: var(--fg);
@@ -13673,10 +13703,7 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: flex-end;
-  justify-self: end;
   gap: 4px;
-  max-width: 142px;
   flex-wrap: wrap;
 }
 .cap-source-badge {
@@ -13702,9 +13729,9 @@ body > .mermaid-diagram--fullscreen {
   color: var(--ok);
 }
 .cap-source-badge--missing {
-  border-color: color-mix(in srgb, var(--err) 28%, var(--border));
-  background: color-mix(in srgb, var(--err) 7%, var(--bg-soft));
-  color: var(--err);
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-soft));
+  color: var(--warn);
 }
 .cap-source-badge--builtin {
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
@@ -13715,7 +13742,6 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   flex-wrap: wrap;
   gap: 5px 8px;
-  margin-top: 4px;
   color: var(--fg-dim);
   font-size: 11px;
 }
@@ -13723,7 +13749,7 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 .cap-source-skills {
   display: flex;
@@ -13787,21 +13813,6 @@ body > .mermaid-diagram--fullscreen {
   color: var(--warn);
   font-size: 11px;
   line-height: 1.35;
-}
-.cap-diagnostics {
-  --wails-draggable: no-drag;
-  align-self: flex-start;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: 11.5px;
-  padding: 2px 0;
-}
-.cap-diagnostics:hover,
-.cap-diagnostics:focus-visible {
-  color: var(--fg);
-  outline: none;
 }
 .cap-failures {
   margin-bottom: 12px;
@@ -14126,6 +14137,12 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 8px;
 }
+.cap-skill-card__identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
 .cap-skill-card__command {
   min-width: 0;
   overflow: hidden;
@@ -14133,6 +14150,17 @@ body > .mermaid-diagram--fullscreen {
   font-size: 12.5px;
   font-weight: 700;
   line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-skill-card__source {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-faint);
+  font-size: 10px;
+}
+.cap-skill-card__source span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -16291,6 +16319,7 @@ body > .mermaid-diagram--fullscreen {
 
   .settings-section__head {
     flex-direction: column;
+    align-items: stretch;
     gap: 10px;
   }
 
@@ -16848,7 +16877,7 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 12px;
+  gap: 10px;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -16877,7 +16906,7 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 750;
 }
 .provider-access-card__desc {
-  margin-top: 4px;
+  margin-top: -4px;
   color: var(--fg-dim);
   font-size: var(--font-control-small);
   line-height: 1.4;
@@ -16892,20 +16921,6 @@ body > .mermaid-diagram--fullscreen {
 }
 .provider-access-card__actions .btn {
   white-space: nowrap;
-}
-.provider-access-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: var(--fg-dim);
-  font-family: var(--mono);
-  font-size: var(--text-2xs);
-  word-break: break-all;
-}
-.provider-access-meta span:not(:last-child)::after {
-  content: "·";
-  margin-left: 6px;
-  color: var(--fg-faint);
 }
 .provider-model-chips {
   display: flex;
@@ -17100,19 +17115,20 @@ body > .mermaid-diagram--fullscreen {
 .provider-capabilities {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--border-soft);
+}
+.provider-capabilities > .provider-card-block--inline {
+  margin-top: 8px;
 }
 .provider-capability-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-elev-1) 72%, transparent);
+  margin-top: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-soft);
   cursor: pointer;
 }
 .provider-capability-row__copy {
@@ -17155,8 +17171,8 @@ body > .mermaid-diagram--fullscreen {
   transition: transform 140ms ease, background 140ms ease;
 }
 .provider-capability-row__switch:checked {
-  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
-  background: var(--accent);
+  border-color: color-mix(in srgb, var(--ok) 72%, var(--border));
+  background: var(--ok);
 }
 .provider-capability-row__switch:checked::before {
   background: var(--bg);
@@ -17173,24 +17189,10 @@ body > .mermaid-diagram--fullscreen {
 .provider-capability-row:has(.provider-capability-row__switch:disabled) {
   cursor: not-allowed;
 }
-.provider-capability-row__cost {
-  color: var(--fg-muted);
-  font-size: var(--text-2xs);
-  line-height: 1.4;
-}
-.provider-capability-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.provider-capability-badges span {
-  padding: 3px 7px;
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  color: var(--fg-muted);
-  font-size: var(--text-2xs);
+.cap-skill-policy__hint {
+  color: var(--fg-faint);
+  font-size: 11px;
   line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 .provider-key-status {
   display: flex;
@@ -17241,7 +17243,7 @@ body > .mermaid-diagram--fullscreen {
 }
 .provider-profile-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.4fr) auto;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.4fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -20422,6 +20424,31 @@ body > .mermaid-diagram--fullscreen {
   .provider-access-card__actions {
     flex-wrap: wrap;
   }
+  .provider-profile-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "profile-name profile-name"
+      "profile-models profile-models"
+      "profile-refresh profile-configure";
+  }
+  .provider-profile-row span:first-child {
+    grid-area: profile-name;
+  }
+  .provider-profile-row span:nth-child(2) {
+    grid-area: profile-models;
+  }
+  .provider-profile-row__refresh {
+    grid-area: profile-refresh;
+  }
+  .provider-profile-row__configure {
+    grid-area: profile-configure;
+  }
+  .provider-profile-row__refresh,
+  .provider-profile-row__configure {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+  }
   .set-hint {
     margin-left: 0;
   }
@@ -22921,11 +22948,11 @@ body > .mermaid-diagram--fullscreen {
   position: relative;
   display: inline-flex;
   align-items: stretch;
-  height: 32px;
+  height: 28px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 7px;
   background: var(--bg-elev);
-  box-shadow: 0 1px 1px color-mix(in srgb, #000 9%, transparent);
+  box-shadow: none;
   overflow: visible;
   --wails-draggable: no-drag;
 }
@@ -22937,6 +22964,7 @@ body > .mermaid-diagram--fullscreen {
 
 .external-opener__primary-wrap {
   display: inline-flex;
+  height: 100%;
 }
 
 .external-opener__primary,
@@ -22944,7 +22972,7 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  height: 100%;
   padding: 0;
   border: none;
   background: transparent;
@@ -22953,13 +22981,13 @@ body > .mermaid-diagram--fullscreen {
 
 .external-opener__primary {
   width: 38px;
-  border-radius: 9px 0 0 9px;
+  border-radius: 6px 0 0 6px;
 }
 
 .external-opener__menu-trigger {
   width: 27px;
   border-left: 1px solid var(--border-soft);
-  border-radius: 0 9px 9px 0;
+  border-radius: 0 6px 6px 0;
 }
 
 .external-opener__primary:hover:not(:disabled),
@@ -22983,8 +23011,8 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 23px;
-  height: 23px;
+  width: 18px;
+  height: 18px;
 }
 
 .external-opener__app-icon img {
@@ -29989,9 +30017,16 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+.project-tree__topic-action--busy svg,
+.project-tree__archive-spinner {
+  animation: project-tree-spin 0.9s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar--workbench .project-tree__topic-state--thinking,
-  .sidebar--workbench .project-tree__topic-state--streaming {
+  .sidebar--workbench .project-tree__topic-state--streaming,
+  .project-tree__topic-action--busy svg,
+  .project-tree__archive-spinner {
     animation: none;
   }
 }
@@ -30749,7 +30784,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .topicbar__actions .external-opener {
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   box-shadow: none;
 }
@@ -37322,6 +37357,7 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   max-width: 190px;
+  min-height: 24px;
   gap: 4px;
   padding: 1px 7px;
   cursor: pointer;
@@ -37329,14 +37365,32 @@ body > .mermaid-diagram--fullscreen {
   font: inherit;
   white-space: nowrap;
 }
-.statusbar__remote > span {
+.statusbar__remote-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.statusbar__remote-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 7px;
+}
 .statusbar__remote-wrap {
   display: inline-flex;
   min-width: 0;
+}
+@media (max-width: 820px) {
+  .statusbar__remote--idle {
+    width: 24px;
+    min-width: 24px;
+    justify-content: center;
+    padding-inline: 4px;
+  }
+  .statusbar__remote--idle .statusbar__remote-label {
+    display: none;
+  }
 }
 .remote-switcher {
   z-index: var(--z-local-popover);

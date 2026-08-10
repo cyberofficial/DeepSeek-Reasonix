@@ -5,7 +5,8 @@ import { DiffView } from "./DiffView";
 import { useT } from "../lib/i18n";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
-import { useGSAPCollapse } from "../lib/useGSAPCollapse";
+import { app } from "../lib/bridge";
+import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { isTerminalSubagentPhase, type Item, type SubagentPhase } from "../lib/useController";
 import type { Translator } from "../lib/i18n";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
@@ -258,11 +259,9 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   useEffect(() => {
     if (!open || !item.dataArchived || fullData || !tabId) return;
     let cancelled = false;
-    import("../lib/bridge").then(({ app }) =>
-      app.ToolResultForTab(tabId, item.id).then((d) => {
-        if (!cancelled && d) setFullData(d);
-      }).catch(() => {}),
-    ).catch(() => {});
+    void app.ToolResultForTab(tabId, item.id).then((d) => {
+      if (!cancelled && d) setFullData(d);
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [open, item.id, item.dataArchived, fullData, tabId]);
 
@@ -295,9 +294,9 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
     ? `${shellName} ${item.status}${shellSummary || summary ? ` ${shellSummary || summary}` : ""}`
     : undefined;
 
-  // GSAP-driven collapse/expand for tool body
+  // Native collapse/expand for the tool body.
   const toolBodyRef = useRef<HTMLDivElement>(null);
-  useGSAPCollapse(toolBodyRef, open);
+  useCollapseAnimation(toolBodyRef, open);
 
   return (
     <div className={`tool${quiet ? " tool--quiet" : ""}${isSubagent ? " tool--subagent" : ""}${open && hasBody ? " tool--open" : ""}`} data-entrance={item.id} data-shell={isShellCard ? execution?.shell || "bash" : undefined}>
