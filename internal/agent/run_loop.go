@@ -244,7 +244,6 @@ func (a *Agent) runToolLoop(ctx context.Context, state *runLoopState) error {
 			// (unapplied path marks uncertain + pause via the notice sink).
 			a.RecordUnappliedSteer("(body load failed)", itemID)
 		}
-		}
 		schemas := a.tools.Schemas()
 		prefixShape := a.capturePrefixShape(schemas)
 		prevPrefixShape := a.lastPrefixShape

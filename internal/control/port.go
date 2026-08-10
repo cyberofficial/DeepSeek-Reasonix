@@ -286,10 +286,7 @@ var (
 	_ SessionPersistence = (*Controller)(nil)
 	_ Input              = (*Controller)(nil)
 	_ Settings           = (*Controller)(nil)
-<<<<<<< HEAD
 	_ Scheduling         = (*Controller)(nil)
-=======
 	_ Inbox              = (*Controller)(nil)
->>>>>>> upstream/main-v2
 	_ SessionAPI         = (*Controller)(nil)
 )

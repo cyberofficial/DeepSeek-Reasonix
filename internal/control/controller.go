@@ -669,10 +669,9 @@ func New(opts Options) *Controller {
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
 	c.setActiveJobSession(opts.SessionPath)
-<<<<<<< HEAD
 	if opts.Scheduler != nil {
 		c.scheduler.Start()
-=======
+	}
 	c.rebindInbox()
 	// Observe Steer / unapplied-steer for durable inbox state transitions.
 	// Must wrap both the controller sink and the executor sink: agent.Steer
@@ -680,7 +679,7 @@ func New(opts Options) *Controller {
 	c.sink = &inboxEventSink{inner: c.sink, c: c}
 	if c.executor != nil {
 		c.executor.SetSink(c.sink)
->>>>>>> upstream/main-v2
+	}
 	}
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
