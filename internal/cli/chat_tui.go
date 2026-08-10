@@ -4745,6 +4745,19 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		} else {
 			m.notice(text)
 		}
+	case "/loopinstant":
+		m.echoLocalCommand(input)
+		if m.ctrl == nil {
+			m.notice("controller not ready")
+			return nil
+		}
+		args := strings.TrimSpace(strings.TrimPrefix(input, "/loopinstant"))
+		text, err := m.ctrl.StartLoopInstant(args)
+		if err != nil {
+			m.notice("loopinstant: " + err.Error())
+		} else {
+			m.notice(text)
+		}
 	case "/loopaction":
 		m.echoLocalCommand(input)
 		if m.ctrl == nil {

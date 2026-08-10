@@ -244,6 +244,7 @@ type Settings interface {
 // Scheduling covers session-scoped scheduled tasks (/loop and the cron tools).
 type Scheduling interface {
 	StartLoop(input string) (string, error)
+	StartLoopInstant(input string) (string, error)
 	StartLoopAction(input string) (string, error)
 	StartLoopDelay(input string) (string, error)
 	Scheduler() *scheduler.Scheduler
