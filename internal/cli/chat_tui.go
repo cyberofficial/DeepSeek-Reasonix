@@ -1718,12 +1718,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Slash-prefixed code comments are prompt text, not commands.
 				// Not a command. Fall through to normal message path.
 			} else if strings.HasPrefix(line, "/") {
-				if ref, ok := control.FileRefLine(line); ok {
+				expanded := m.expandPastedBlocks(line)
+				if ref, ok := control.FileRefLine(expanded); ok {
 					line = ref
 				} else {
 					m.input.Reset()
 					m.pastedBlocks = nil
-					cmds = append(cmds, m.runSlashCommand(line))
+					cmds = append(cmds, m.runSlashCommand(expanded))
 					return m, finalize(m, cmds)
 				}
 			}
