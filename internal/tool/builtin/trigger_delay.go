@@ -97,7 +97,7 @@ func (triggerDelay) Execute(ctx context.Context, args json.RawMessage) (string, 
 		id, err = sched.AddActionAt("", command, strings.TrimSpace(in.MatchPattern),
 			true, false, actionResponse, time.Time{}, at)
 	} else {
-		id, err = sched.Add("", prompt, at, true, false)
+		id, err = sched.Add("", prompt, at, true, false, false)
 	}
 	if err != nil {
 		return "", fmt.Errorf("trigger_delay: %v", err)

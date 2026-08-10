@@ -65,7 +65,7 @@ func (cronCreate) Execute(ctx context.Context, args json.RawMessage) (string, er
 	} else if !scheduler.Valid(cron) {
 		return "", fmt.Errorf("cron_create: %q is neither a 5-field cron expression nor a valid interval token (s/m/h/d)", in.Cron)
 	}
-	id, err := sched.Add(cron, prompt, time.Now(), in.OneShot, in.NoExpire)
+	id, err := sched.Add(cron, prompt, time.Now(), in.OneShot, in.NoExpire, false)
 	if err != nil {
 		return "", fmt.Errorf("cron_create: %v", err)
 	}

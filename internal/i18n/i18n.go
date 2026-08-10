@@ -258,6 +258,7 @@ type Messages struct {
 	CmdLoopStatus       string // /loopstatus
 	CmdLoopList         string // /looplist
 	CmdLoopDel          string // /loopdel
+	CmdLoopInstant      string // /loopinstant
 	CmdRemember         string // /remember
 	CmdForget           string // /forget
 	CmdMcp              string // /mcp

@@ -277,8 +277,10 @@ func (s *Scheduler) ReleaseFiring(id string) {
 // time.Now() for an immediate first iteration) and then waits for
 // schedule_wakeup to set the next wakeup. oneShot tasks delete themselves
 // after their first fire regardless of cronExpr. noExpire tasks are exempt
-// from the 7-day load expiry (endless loops).
-func (s *Scheduler) Add(cronExpr, prompt string, nextFire time.Time, oneShot, noExpire bool) (string, error) {
+// from the 7-day load expiry (endless loops). When fireImmediately is true
+// and cronExpr is non-empty, the task fires immediately on creation (NextFire
+// = time.Now()) instead of waiting for the next cron match.
+func (s *Scheduler) Add(cronExpr, prompt string, nextFire time.Time, oneShot, noExpire, fireImmediately bool) (string, error) {
 	id, err := newTaskID()
 	if err != nil {
 		return "", err
@@ -289,7 +291,11 @@ func (s *Scheduler) Add(cronExpr, prompt string, nextFire time.Time, oneShot, no
 		return "", ErrTaskLimit
 	}
 	if cronExpr != "" {
-		nextFire = Next(cronExpr, time.Now())
+		if fireImmediately {
+			nextFire = time.Now()
+		} else {
+			nextFire = Next(cronExpr, time.Now())
+		}
 	}
 	s.tasks[id] = &Task{
 		ID:       id,

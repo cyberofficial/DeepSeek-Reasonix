@@ -152,7 +152,7 @@ func TestIsFinalFire(t *testing.T) {
 // re-arming would re-execute it. Prompt-framed fires still re-arm.
 func TestRearmSkipsDataFramedOutput(t *testing.T) {
 	sched := scheduler.New()
-	id, err := sched.Add("*/5 * * * *", "check", time.Now(), false, false)
+	id, err := sched.Add("*/5 * * * *", "check", time.Now(), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}

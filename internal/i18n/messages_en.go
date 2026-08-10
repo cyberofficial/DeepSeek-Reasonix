@@ -273,6 +273,7 @@ var English = Messages{
 	CmdLoopStatus:       "toggle the NEXT JOB status-bar indicator (on, off, or auto)",
 	CmdLoopList:         "list scheduled tasks locally (no model call)",
 	CmdLoopDel:          "delete a scheduled task by ID (no model call)",
+	CmdLoopInstant:      "run a prompt immediately, then on a schedule",
 	CmdRemember:         "save a memory note",
 	CmdForget:           "archive a saved memory",
 	CmdMcp:              "MCP servers",

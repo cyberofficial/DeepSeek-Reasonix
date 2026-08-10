@@ -44,7 +44,7 @@ func TestScheduleWakeupRejectsNonFiniteDelay(t *testing.T) {
 func TestScheduleWakeupAcceptsValidDelay(t *testing.T) {
 	ctx := scheduleWakeupCtx()
 	sched, _ := scheduler.FromContext(ctx)
-	if _, err := sched.Add("", "watch the deploy", time.Now(), false, false); err != nil {
+	if _, err := sched.Add("", "watch the deploy", time.Now(), false, false, false); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	out, err := (scheduleWakeup{}).Execute(ctx, json.RawMessage(`{"delay_minutes": 5, "reason": "check later"}`))

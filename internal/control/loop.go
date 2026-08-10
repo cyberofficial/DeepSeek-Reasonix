@@ -63,7 +63,7 @@ func (c *Controller) StartLoop(input string) (string, error) {
 	if interval != "" {
 		cronExpr, _ = scheduler.ParseInterval(interval)
 	}
-	id, err := sched.Add(cronExpr, strings.TrimSpace(prompt), time.Now(), false, noExpire)
+	id, err := sched.Add(cronExpr, strings.TrimSpace(prompt), time.Now(), false, noExpire, false)
 	if err != nil {
 		return "", err
 	}
@@ -80,6 +80,66 @@ func (c *Controller) StartLoop(input string) (string, error) {
 // parseLoopArgs splits /loop arguments into an optional leading --forever
 // flag, an optional interval token, and the remaining prompt.
 func parseLoopArgs(input string) (interval, prompt string, noExpire bool) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return "", "", false
+	}
+	rest := input
+	if fields[0] == "--forever" {
+		noExpire = true
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		fields = strings.Fields(rest)
+		if len(fields) == 0 {
+			return "", "", true
+		}
+	}
+	if _, ok := scheduler.ParseInterval(fields[0]); ok {
+		return fields[0], strings.TrimSpace(strings.TrimPrefix(rest, fields[0])), noExpire
+	}
+	return "", rest, noExpire
+}
+
+// StartLoopInstant creates a scheduled task that fires IMMEDIATELY on creation,
+// then continues on the specified interval schedule (or dynamic if no interval).
+//
+//	"/loopinstant 2m check the deploy"  — fires now, then every 2 minutes
+//	"/loopinstant check the deploy"     — fires now, then dynamic (agent-controlled)
+//	"/loopinstant --forever 2m check"   — fires now, endless: no 7-day expiry
+func (c *Controller) StartLoopInstant(input string) (string, error) {
+	sched := c.scheduler
+	if sched == nil {
+		return "", fmt.Errorf("scheduler is unavailable in this session")
+	}
+	interval, prompt, noExpire := parseLoopInstantArgs(input)
+	if strings.TrimSpace(prompt) == "" {
+		prompt = c.loadLoopMD()
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = loopMaintenancePrompt
+	}
+	var cronExpr string
+	if interval != "" {
+		cronExpr, _ = scheduler.ParseInterval(interval)
+	}
+	// Pass fireImmediately=true to make the first fire happen immediately
+	id, err := sched.Add(cronExpr, strings.TrimSpace(prompt), time.Now(), false, noExpire, true)
+	if err != nil {
+		return "", err
+	}
+	note := ""
+	if noExpire {
+		note = " (no expiry)"
+	}
+	if cronExpr != "" {
+		return fmt.Sprintf("loopinstant started — task %s: every %s (fires now)%s\n%s", id, interval, note, promptPreview(prompt)), nil
+	}
+	return fmt.Sprintf("loopinstant started — task %s: dynamic (fires now)%s\n%s", id, note, promptPreview(prompt)), nil
+}
+
+// parseLoopInstantArgs splits /loopinstant arguments into an optional leading --forever
+// flag, an optional interval token, and the remaining prompt.
+// The --instant behavior is implied by the command itself.
+func parseLoopInstantArgs(input string) (interval, prompt string, noExpire bool) {
 	fields := strings.Fields(input)
 	if len(fields) == 0 {
 		return "", "", false
@@ -163,7 +223,7 @@ func (c *Controller) StartLoopDelay(input string) (string, error) {
 		id, err = sched.AddActionAt("", payload, matchPattern,
 			true, false, actionResponse, time.Time{}, at)
 	} else {
-		id, err = sched.Add("", payload, at, true, false)
+		id, err = sched.Add("", payload, at, true, false, false)
 	}
 	if err != nil {
 		return "", err

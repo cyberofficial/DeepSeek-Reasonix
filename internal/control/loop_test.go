@@ -244,7 +244,7 @@ func TestRunScheduledTurnClosedReleasesFiring(t *testing.T) {
 	sched.OnFire(func(t scheduler.Task) { delivered <- t.ID })
 	sched.Start()
 	defer sched.Stop()
-	id, err := sched.Add("", "watch", time.Now(), false, false)
+	id, err := sched.Add("", "watch", time.Now(), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}

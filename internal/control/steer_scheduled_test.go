@@ -104,7 +104,7 @@ func TestRunScheduledTurnInjectsMidTurn(t *testing.T) {
 	// deliver the fire manually, exactly like the ticker would. The task is
 	// really in the scheduler, so the injection path's MarkStarted operates
 	// on the live firing state.
-	id, err := sched.Add("", "check the deploy", time.Now().Add(10*time.Minute), false, false)
+	id, err := sched.Add("", "check the deploy", time.Now().Add(10*time.Minute), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestScheduledInjectionFiresOncePerDueSlot(t *testing.T) {
 	<-prov.entered
 
 	// A dynamic task due immediately: the live ticker delivers it once.
-	if _, err := sched.Add("", "loop prompt", time.Now(), false, false); err != nil {
+	if _, err := sched.Add("", "loop prompt", time.Now(), false, false, false); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return countInjected() == 1 })
@@ -285,7 +285,7 @@ func TestScheduledDeletePreventsInjection(t *testing.T) {
 	c.Send("start the turn")
 	<-prov.entered
 
-	id, err := sched.Add("", "loop prompt", time.Now(), false, false)
+	id, err := sched.Add("", "loop prompt", time.Now(), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestScheduledInjectionRearmsOnUnapplied(t *testing.T) {
 	c.Send("start the turn")
 	<-prov.entered
 
-	id, err := sched.Add("", "loop prompt", time.Now().Add(10*time.Minute), false, false)
+	id, err := sched.Add("", "loop prompt", time.Now().Add(10*time.Minute), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}

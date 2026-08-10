@@ -567,6 +567,7 @@ var ChineseTraditional = Messages{
 	CmdLoopStatus:              "切換 NEXT JOB 狀態列指示器（on、off 或 auto）",
 	CmdLoopList:                "在本機列出已排定的任務（不消耗模型呼叫）",
 	CmdLoopDel:                 "依 ID 刪除已排定的任務（不消耗模型呼叫）",
+	CmdLoopInstant:             "立即執行提示詞，然後按排程重複",
 	CmdDiffFold:                "切換 diff 摺疊/展開",
 	ListMemorySaved:            "儲存的記憶",
 	ListMemoryArchived:         "歸檔的記憶",

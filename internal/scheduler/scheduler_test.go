@@ -97,7 +97,7 @@ func TestAddFireDelete(t *testing.T) {
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
 
-	id, err := s.Add("*/1 * * * *", "check deploy", time.Time{}, false, false)
+	id, err := s.Add("*/1 * * * *", "check deploy", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -119,11 +119,11 @@ func TestTaskLimit(t *testing.T) {
 	s := New()
 	defer s.Stop()
 	for i := 0; i < DefaultTaskLimit; i++ {
-		if _, err := s.Add("*/5 * * * *", "x", time.Time{}, false, false); err != nil {
+		if _, err := s.Add("*/5 * * * *", "x", time.Time{}, false, false, false); err != nil {
 			t.Fatalf("Add %d: %v", i, err)
 		}
 	}
-	if _, err := s.Add("*/5 * * * *", "x", time.Time{}, false, false); err != ErrTaskLimit {
+	if _, err := s.Add("*/5 * * * *", "x", time.Time{}, false, false, false); err != ErrTaskLimit {
 		t.Errorf("Add over limit: got %v, want ErrTaskLimit", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestDynamicWakeup(t *testing.T) {
 	s := New()
 	defer s.Stop()
 	// dynamic task: no cron, immediate first fire
-	if _, err := s.Add("", "watch pr", time.Now(), false, false); err != nil {
+	if _, err := s.Add("", "watch pr", time.Now(), false, false, false); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !s.HasDynamic() {
@@ -159,7 +159,7 @@ func TestFireDueDynamicConsumesWakeup(t *testing.T) {
 	s := New()
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
-	id, err := s.Add("", "watch", time.Now(), false, false)
+	id, err := s.Add("", "watch", time.Now(), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestFireDueCoalescesWhileFiring(t *testing.T) {
 	s := New()
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
-	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false)
+	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -223,11 +223,11 @@ func TestNextDue(t *testing.T) {
 	if _, _, ok := s.NextDue(); ok {
 		t.Error("NextDue = ok with no tasks")
 	}
-	laterID, err := s.Add("", "later", time.Now().Add(10*time.Minute), false, false)
+	laterID, err := s.Add("", "later", time.Now().Add(10*time.Minute), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	soonerID, err := s.Add("", "sooner", time.Now().Add(2*time.Minute), false, false)
+	soonerID, err := s.Add("", "sooner", time.Now().Add(2*time.Minute), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestCronTurnLongerThanIntervalNoStampede(t *testing.T) {
 	s := New()
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
-	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false)
+	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestReleaseFiringAllowsRefire(t *testing.T) {
 	s := New()
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
-	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false)
+	id, err := s.Add("*/1 * * * *", "check", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -322,13 +322,13 @@ func TestReleaseFiringAllowsRefire(t *testing.T) {
 
 func TestCancelDynamicKeepsCronTasks(t *testing.T) {
 	s := New()
-	if _, err := s.Add("*/5 * * * *", "cron loop", time.Time{}, false, false); err != nil {
+	if _, err := s.Add("*/5 * * * *", "cron loop", time.Time{}, false, false, false); err != nil {
 		t.Fatalf("Add cron: %v", err)
 	}
-	if _, err := s.Add("", "dynamic loop", time.Now(), false, false); err != nil {
+	if _, err := s.Add("", "dynamic loop", time.Now(), false, false, false); err != nil {
 		t.Fatalf("Add dynamic: %v", err)
 	}
-	if _, err := s.Add("", "one-shot reminder", time.Now(), true, false); err != nil {
+	if _, err := s.Add("", "one-shot reminder", time.Now(), true, false, false); err != nil {
 		t.Fatalf("Add one-shot: %v", err)
 	}
 	if n := s.CancelDynamic(); n != 2 {
@@ -350,7 +350,7 @@ func TestStopFlushes(t *testing.T) {
 	s.SetPersistPath(path)
 	s.Start()
 	defer s.Stop()
-	if _, err := s.Add("*/5 * * * *", "flush me", time.Time{}, false, false); err != nil {
+	if _, err := s.Add("*/5 * * * *", "flush me", time.Time{}, false, false, false); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	s.Stop() // must flush the just-added task even inside the rate-limit window
@@ -363,7 +363,7 @@ func TestStopFlushes(t *testing.T) {
 	}
 	// a stopped scheduler may Start again without panicking
 	s.Start()
-	if _, err := s.Add("*/5 * * * *", "again", time.Time{}, false, false); err != nil {
+	if _, err := s.Add("*/5 * * * *", "again", time.Time{}, false, false, false); err != nil {
 		t.Fatalf("Add after restart: %v", err)
 	}
 	s.Stop()
@@ -373,7 +373,7 @@ func TestOneShotSelfDeletes(t *testing.T) {
 	s := New()
 	var fired []Task
 	s.OnFire(func(t Task) { fired = append(fired, t) })
-	id, err := s.Add("", "remind me", time.Now(), true, false)
+	id, err := s.Add("", "remind me", time.Now(), true, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestPersistRoundTrip(t *testing.T) {
 
 	s := New()
 	s.SetPersistPath(path)
-	id, err := s.Add("*/5 * * * *", "check ci", time.Time{}, false, false)
+	id, err := s.Add("*/5 * * * *", "check ci", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestSaveMergesForeignTasks(t *testing.T) {
 
 	a := New()
 	a.SetPersistPath(path)
-	aID, err := a.Add("*/5 * * * *", "chat A task", time.Time{}, false, false)
+	aID, err := a.Add("*/5 * * * *", "chat A task", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("A Add: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestSaveMergesForeignTasks(t *testing.T) {
 	b := New()
 	b.SetPersistPath(path)
 	b.Load(path)
-	bID, err := b.Add("*/10 * * * *", "chat B task", time.Time{}, false, false)
+	bID, err := b.Add("*/10 * * * *", "chat B task", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("B Add: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestLoadCapsAtTaskLimit(t *testing.T) {
 // (unapplied steer) is re-armed so the next tick retries the delivery.
 func TestRearmMakesTaskDueAgain(t *testing.T) {
 	s := New()
-	id, err := s.Add("", "loop", time.Now().Add(time.Hour), false, false)
+	id, err := s.Add("", "loop", time.Now().Add(time.Hour), false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestDeleteBypassesRateLimiter(t *testing.T) {
 	path := filepath.Join(dir, "tasks.json")
 	s := New()
 	s.SetPersistPath(path)
-	id, err := s.Add("*/5 * * * *", "task", time.Time{}, false, false)
+	id, err := s.Add("*/5 * * * *", "task", time.Time{}, false, false, false)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
