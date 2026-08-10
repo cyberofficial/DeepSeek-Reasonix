@@ -268,6 +268,7 @@ type SessionAPI interface {
 	Input
 	Settings
 	Scheduling
+	Inbox
 }
 
 // Compile-time proof that the concrete controller satisfies each sub-port and
@@ -285,6 +286,10 @@ var (
 	_ SessionPersistence = (*Controller)(nil)
 	_ Input              = (*Controller)(nil)
 	_ Settings           = (*Controller)(nil)
+<<<<<<< HEAD
 	_ Scheduling         = (*Controller)(nil)
+=======
+	_ Inbox              = (*Controller)(nil)
+>>>>>>> upstream/main-v2
 	_ SessionAPI         = (*Controller)(nil)
 )
