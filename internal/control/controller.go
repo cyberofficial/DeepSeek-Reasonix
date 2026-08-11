@@ -52,6 +52,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/scheduler"
 	"reasonix/internal/sessioninbox"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/shellrun"
@@ -679,7 +680,6 @@ func New(opts Options) *Controller {
 	c.sink = &inboxEventSink{inner: c.sink, c: c}
 	if c.executor != nil {
 		c.executor.SetSink(c.sink)
-	}
 	}
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
