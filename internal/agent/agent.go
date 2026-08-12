@@ -15,6 +15,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/capability"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/diff"
@@ -31,6 +32,7 @@ import (
 	"reasonix/internal/sandbox"
 	"reasonix/internal/scheduler"
 	"reasonix/internal/shellparse"
+	"reasonix/internal/taskpolicy"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -280,20 +282,14 @@ type ToolHooks interface {
 // Agent drives a single task: a Provider, a tool Registry, and a Session wired
 // into the main loop.
 type Agent struct {
-	prov               provider.Provider
-	tools              *tool.Registry
-	session            *Session
-	sessMu             sync.Mutex // guards the session pointer for external Session()/SetSession
-	maxSteps           int
-	maxStepsKey        string
-	reasoningByteLimit int
-	maxOutputTokens    int
+	agentConfig
+	prov    provider.Provider
+	tools   *tool.Registry
+	session *Session
+	sessMu  sync.Mutex // guards the session pointer for external Session()/SetSession
 	// executorHandoffGuard is enabled by Coordinator only for the executor agent.
 	executorHandoffGuard bool
-	temperature          float64
 	pricing              *provider.Pricing
-	usageSource          string
-	modelRef             string
 	responseLanguage     atomic.Value // string: auto|zh|en
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
@@ -321,23 +317,9 @@ type Agent struct {
 	lastPrefixShape     PrefixShape
 	haveLastPrefixShape bool
 
-	// warnedMissingToolCallReasoning marks one active missing-reasoning incident
-	// within this agent. The legacy name is retained because the persisted state
-	// predates silent recovery; it now gates one automatic retry rather than a
-	// user-visible warning. A healthy tool-call turn clears it. Loop-owned;
-	// reset by SetSession.
-	warnedMissingToolCallReasoning bool
-	// missingReasoningWarnStateChecked avoids a file transaction on every
-	// healthy tool-call turn. It resets with the session so a new Agent can
-	// continue or confirm an incident persisted by an earlier process.
-	missingReasoningWarnStateChecked bool
-	// missingReasoningHealthyStreak provides the same three-turn anti-flapping
-	// policy when no cross-process state directory is configured.
-	missingReasoningHealthyStreak int
-	// missingReasoningWarnPendingResolveAt keeps a healthy observation retryable
-	// when its state write fails. The next missing turn retries that watermark
-	// before consulting the persisted incident and otherwise fails visible.
-	missingReasoningWarnPendingResolveAt time.Time
+	// missingReasoning is the live view of one missing-reasoning incident.
+	// Loop-owned; SetSession clears all of it but the resolve watermark.
+	missingReasoning missingReasoningWatch
 
 	// missingReasoningWarnState rate-limits recovery retries across sessions and
 	// processes by an opaque provider-configuration fingerprint (#7059). The
@@ -383,14 +365,8 @@ type Agent struct {
 	// Shared by root and sub-agents for the same controller task. nil disables
 	// recovery checks (Ask/YOLO, headless without wiring, or feature off).
 	recoveryGate RecoveryGate
-	// recoveryAgentID labels this agent on recovery cards (empty = root).
-	recoveryAgentID string
-	// recoveryTaskID isolates recovery state across concurrent top-level tasks.
-	// Empty shares the root task bucket.
-	recoveryTaskID string
-	// recoveryRunSeq gives ordinary (non-goal) runs a collision-free host scope.
-	// Goal runs use their stable delivery scope instead.
-	recoveryRunSeq atomic.Uint64
+	// recovery is who this agent is to the shared gate above.
+	recovery recoveryIdentity
 
 	// planModeReadOnlyTrust is retained for legacy controller wiring. The main
 	// Plan execution path no longer consults it.
@@ -444,7 +420,6 @@ type Agent struct {
 	writeScheduler *SubagentScheduler
 	// writeWorkspaceRoot is the workspace used to normalize parent write
 	// reservations when writeScheduler is set.
-	writeWorkspaceRoot string
 
 	// workspaceLease is shared by every writer-capable agent in one Delivery
 	// session. It is acquired lazily on the first mutation and held through the
@@ -496,9 +471,21 @@ type Agent struct {
 	// the provider-cached prefix. deliveryScopeID and deliveryCheckpoint survive
 	// turns while a stable delivery scope continues; the per-turn expectations
 	// live in perTurnState.
+	// When agentPreset is set, deliveryProfile is derived for baseline Delivery
+	// and may be elevated per-turn by TaskPolicy (e.g. Light high-risk).
 	deliveryProfile    bool
 	deliveryScopeID    string
 	deliveryCheckpoint evidence.DeliveryCheckpoint
+
+	// agentPreset is the session role setting. Atomic so SetAgentPreset can
+	// update subsequent turns without rebuilding the agent.
+	agentPreset atomic.Value // string light|balanced|delivery
+
+	// turnPolicy is frozen at the start of the current Run and never observes
+	// mid-turn SetAgentPreset changes.
+	turnPolicy taskpolicy.TaskPolicy
+	// turnPolicySet is true once beginRunTurn derived turnPolicy.
+	turnPolicySet bool
 
 	// perTurnState groups the host flags that are valid for exactly one
 	// Agent.Run. beginRunTurn zeroes the whole struct in one assignment, so a
@@ -530,13 +517,8 @@ type Agent struct {
 	capabilityLedger *capability.Ledger
 	// capabilityAudit accumulates non-persisted routing/proxy counters.
 	capabilityAudit *capability.Audit
-	// lastCapabilityGate tracks prefer-reminder state across final-answer retries.
-	capabilityPreferReminded bool
-	// capabilityRequireMissSeen / capabilityPreferMissSeen remember that the
-	// final gate reported a miss earlier this turn, so a later clean gate is
-	// audited as a recovery. Reset per turn in SeedCapabilityRoute.
-	capabilityRequireMissSeen bool
-	capabilityPreferMissSeen  bool
+	// capabilityGate is the turn's gate memory across final-answer retries.
+	capabilityGate capabilityGateState
 	// pendingReviewWarnings are warn-level findings to surface in the final summary.
 	pendingReviewWarnings []string
 
@@ -547,32 +529,22 @@ type Agent struct {
 
 	// subagentDepth tracks the current agent's nesting depth. maxSubagentDepth
 	// caps delegation; when reached, recursive agent/skill tools are excluded.
-	subagentDepth    int
-	maxSubagentDepth int
 
 	// Context management keeps the canonical transcript immutable and installs
 	// at most one provider-visible checkpoint each time compactRatio is crossed.
-	contextWindow       int
-	compactRatio        float64
-	recentKeep          int
-	archiveDir          string
-	keepPolicy          KeepPolicy
-	compactStuck        bool
-	consecutiveCompacts int
-	sessionPath         string // bound transcript path for projection sidecars
-	workspaceID         string // stable prompt-cache lineage component
-	cacheState          string // legacy resume telemetry; never provider-visible
-	checkpointState     string // none|restored|applied; runtime-only
-	compactionState     CompactionState
+	keepPolicy      KeepPolicy
+	compaction      compactionProgress
+	sessionPath     string // bound transcript path for projection sidecars
+	workspaceID     string // stable prompt-cache lineage component
+	cacheState      string // legacy resume telemetry; never provider-visible
+	checkpointState string // none|restored|applied; runtime-only
+	compactionState CompactionState
 	// compactionMu guards projection snapshots/install and the in-memory sidecar
 	// generation. Network summarization never runs while this lock is held.
 	compactionMu sync.Mutex
 	// compactionRunMu singleflights the expensive summary transaction without
 	// holding the session lock during network I/O.
-	compactionRunMu sync.Mutex
-	// lastCompactionTurn prevents the post-turn observer and pre-send preflight
-	// from paying for two summaries during one active tool loop.
-	lastCompactionTurn     atomic.Int64
+	compactionRunMu        sync.Mutex
 	strictAlternatingRoles bool // coalesce adjacent user turns on provider request copies
 	// activeTurnCreatedAt identifies the real/synthetic user message that began
 	// the currently running turn. Compaction may rewrite older history while a
@@ -600,6 +572,12 @@ type Agent struct {
 	// outcome shadows progress with an outcome-decomposed scorer whose samples
 	// only feed trajectory recording; it never influences guard behavior.
 	outcome *evidence.OutcomeTracker
+
+	// taskBudget accumulates spend across every Run continuing one task and
+	// resets with the evidence ledger: one ledger, one task, one bill. A
+	// per-Run total cannot see the failures worth stopping — those are
+	// measured in hours, and every "continue" starts a fresh Run.
+	taskBudget runBudget
 
 	// ebm is the Evidence-Before-More-Mutation nudge's once-per-turn state.
 	ebm ebmState
@@ -714,8 +692,8 @@ func (a *Agent) SetRecoveryIdentity(agentID, taskID string) {
 	if a == nil {
 		return
 	}
-	a.recoveryAgentID = strings.TrimSpace(agentID)
-	a.recoveryTaskID = strings.TrimSpace(taskID)
+	a.recovery.agentID = strings.TrimSpace(agentID)
+	a.recovery.taskID = strings.TrimSpace(taskID)
 }
 
 // RecoveryGate returns the attached Auto Guard (may be nil).
@@ -782,9 +760,8 @@ func (a *Agent) withTurnPreferences(input string) string {
 		}
 	}
 	input = WithReasoningLanguage(input, lang)
-	if a.deliveryProfile && !strings.Contains(input, "<delivery-runtime>") {
-		input = strings.TrimSpace(input) + "\n\n" + DeliveryRuntimeMarker
-	}
+	// Role settings no longer inject a stable delivery-runtime system-like
+	// marker. Per-turn <execution-policy> carries the frozen role setting.
 	return input
 }
 
@@ -846,18 +823,21 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
 	a.resetOutputBudgetState()
-	a.warnedMissingToolCallReasoning = false
-	a.missingReasoningWarnStateChecked = false
-	a.missingReasoningHealthyStreak = 0
+	// pendingResolveAt is deliberately not cleared: an unwritten resolve
+	// watermark belongs to the provider configuration, not to the conversation
+	// being replaced, and the next missing turn still owes it a retry.
+	a.missingReasoning.active = false
+	a.missingReasoning.stateRecorded = false
+	a.missingReasoning.healthyStreak = 0
 	a.repeatFailureCounts = nil
 	a.repeatFailureScope = ""
 	a.compactionMu.Lock()
 	a.compactionState = CompactionState{} // lineage change; disk reloaded on Resume
 	a.cacheState = CacheStateUnknown
 	a.compactionMu.Unlock()
-	a.compactStuck = false
-	a.consecutiveCompacts = 0
-	a.lastCompactionTurn.Store(0)
+	a.compaction.stuck = false
+	a.compaction.consecutive = 0
+	a.compaction.lastTurn.Store(0)
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
@@ -957,17 +937,25 @@ func midTurnSteerMessage(text string) string {
 // regardless of the session's language and profile settings.
 func SteerText(content string) (string, bool) {
 	s := content
+	var foundAny bool
 	for {
 		if after, found := stripSteerPrefix(s); found {
+			foundAny = true
 			// Strip only the "\n" separator, preserving the original text.
 			after = strings.TrimPrefix(after, "\n")
 			if trimmed, cut := strings.CutSuffix(after, "\n\n"+DeliveryRuntimeMarker); cut {
 				after = trimmed
 			}
-			return after, true
+			// Continue looping to handle nested prefixes (e.g., user steer wrapping scheduled task)
+			s = after
+			continue
 		}
 		next, ok := trimLeadingSteerWrapper(s)
 		if !ok {
+			if foundAny {
+				// No more wrappers, and we already stripped at least one prefix
+				return s, true
+			}
 			return "", false
 		}
 		s = next
@@ -1196,8 +1184,10 @@ type Options struct {
 	// protocols to omit the budget (Anthropic still requires max_tokens).
 	MaxOutputTokens int
 	Temperature     float64
-	Pricing         *provider.Pricing // optional, for per-turn cost display
-	UsageSource     string            // optional billable usage source; default executor
+	// TaskBudget bounds a task's spend; zero uses DefaultTaskBudget.
+	TaskBudget  TaskBudget
+	Pricing     *provider.Pricing // optional, for per-turn cost display
+	UsageSource string            // optional billable usage source; default executor
 	// ModelRef names the canonical "provider/model" ref backing this agent's
 	// provider instance. It is attached to emitted Usage events so downstream
 	// usage accounting can attribute tokens to the exact model.
@@ -1289,7 +1279,15 @@ type Options struct {
 	// DeliveryProfile enforces acceptance criteria before mutations and requires
 	// post-change review, verification, and evidence-backed sign-off before a
 	// final answer. It changes host control flow, not tool schemas.
+	// Deprecated: prefer AgentPreset + turn TaskPolicy. Still honored when
+	// AgentPreset is empty for one compatibility version of direct constructors.
 	DeliveryProfile bool
+
+	// AgentPreset is the session role setting (light|balanced|delivery). Empty
+	// falls back to balanced unless DeliveryProfile is true (then delivery).
+	// Switching the preset mid-session does not rebuild the agent; the value is
+	// frozen at turn admission into TaskPolicy.
+	AgentPreset string
 
 	// Ablation switches subsystems off for a benchmark arm. The zero value runs
 	// everything, so ordinary callers leave it unset.
@@ -1406,24 +1404,36 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		reasoningByteLimit = defaultReasoningByteLimit
 	}
 	a := &Agent{
-		prov:                      prov,
-		tools:                     tools,
-		session:                   session,
-		maxSteps:                  opts.MaxSteps,
-		maxStepsKey:               maxStepsKey,
-		reasoningByteLimit:        reasoningByteLimit,
-		maxOutputTokens:           opts.MaxOutputTokens,
-		temperature:               opts.Temperature,
-		pricing:                   opts.Pricing,
-		usageSource:               usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-		modelRef:                  strings.TrimSpace(opts.ModelRef),
-		sink:                      sink,
-		requireVisibleFinal:       opts.RequireVisibleFinal,
-		gate:                      gate,
-		extensions:                opts.Extensions,
-		recoveryGate:              opts.RecoveryGate,
-		recoveryAgentID:           strings.TrimSpace(opts.RecoveryAgentID),
-		recoveryTaskID:            strings.TrimSpace(opts.RecoveryTaskID),
+		agentConfig: agentConfig{
+			maxSteps:           opts.MaxSteps,
+			maxStepsKey:        maxStepsKey,
+			reasoningByteLimit: reasoningByteLimit,
+			maxOutputTokens:    opts.MaxOutputTokens,
+			temperature:        opts.Temperature,
+			usageSource:        usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+			modelRef:           strings.TrimSpace(opts.ModelRef),
+			writeWorkspaceRoot: strings.TrimSpace(opts.WriteWorkspaceRoot),
+			subagentDepth:      subagentDepth,
+			maxSubagentDepth:   maxSubagentDepth,
+			contextWindow:      opts.ContextWindow,
+			compactRatio:       opts.CompactRatio,
+			recentKeep:         opts.RecentKeep,
+			archiveDir:         opts.ArchiveDir,
+		},
+		prov:                prov,
+		tools:               tools,
+		session:             session,
+		taskBudget:          runBudget{limit: normalizeTaskBudget(opts.TaskBudget)},
+		pricing:             opts.Pricing,
+		sink:                sink,
+		requireVisibleFinal: opts.RequireVisibleFinal,
+		gate:                gate,
+		extensions:          opts.Extensions,
+		recoveryGate:        opts.RecoveryGate,
+		recovery: recoveryIdentity{
+			agentID: strings.TrimSpace(opts.RecoveryAgentID),
+			taskID:  strings.TrimSpace(opts.RecoveryTaskID),
+		},
 		readOnlyExecution:         opts.ReadOnlyExecution,
 		plannerMCPExecution:       opts.PlannerMCPExecution,
 		planModeReadOnlyTrust:     planModeReadOnlyTrust,
@@ -1435,38 +1445,80 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		scheduler:                 opts.Scheduler,
 		memQueue:                  opts.MemoryQueue,
 		writeScheduler:            opts.WriteScheduler,
-		writeWorkspaceRoot:        strings.TrimSpace(opts.WriteWorkspaceRoot),
 		workspaceLease:            opts.WorkspaceLease,
 		missingReasoningWarnState: missingReasoningWarnStateFor(opts.MissingReasoningWarnStateDir),
 		evidence:                  evidence.NewLedger(),
 		projectChecks:             append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		deliveryProfile:           opts.DeliveryProfile,
+		deliveryProfile:           opts.DeliveryProfile || agentpreset.Normalize(opts.AgentPreset) == agentpreset.Delivery,
 		ablation:                  opts.Ablation,
 		classifierTaskText:        opts.ClassifierTaskText,
 		capabilityLedger:          opts.CapabilityLedger,
 		capabilityAudit:           opts.CapabilityAudit,
-		contextWindow:             opts.ContextWindow,
-		compactRatio:              opts.CompactRatio,
-		recentKeep:                opts.RecentKeep,
-		archiveDir:                opts.ArchiveDir,
 		keepPolicy:                opts.KeepPolicy,
 		sessionPath:               strings.TrimSpace(opts.SessionPath),
 		workspaceID:               strings.TrimSpace(opts.WorkspaceID),
 		cacheState:                CacheStateUnknown,
 		strictAlternatingRoles:    opts.StrictAlternatingRoles,
-		subagentDepth:             subagentDepth,
-		maxSubagentDepth:          maxSubagentDepth,
 		mutationObserver:          opts.MutationObserver,
 	}
 	a.outputBudget = outputBudgetOf(prov)
 	if a.sessionPath != "" {
 		a.LoadProjectionSidecar(a.sessionPath)
 	}
+	preset := strings.TrimSpace(opts.AgentPreset)
+	if preset == "" && opts.DeliveryProfile {
+		preset = string(agentpreset.Delivery)
+	}
+	a.SetAgentPreset(preset)
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	a.maybeArmForkFromEnv()
 	a.maybeWrapForkCaptureProvider()
 	return a
+}
+
+// SetAgentPreset updates the role setting used by subsequent turns. It does not
+// rebuild providers, tools, or history. The in-flight turn keeps its frozen
+// TaskPolicy.
+func (a *Agent) SetAgentPreset(preset string) {
+	if a == nil {
+		return
+	}
+	p := agentpreset.Normalize(preset)
+	a.agentPreset.Store(string(p))
+	// Keep baseline deliveryProfile aligned with Delivery role setting so
+	// legacy gates that still read the bool stay coherent until fully migrated.
+	switch p {
+	case agentpreset.Delivery:
+		a.deliveryProfile = true
+	case agentpreset.Light, agentpreset.Balanced:
+		// Light may still elevate per-turn; baseline stays non-delivery.
+		a.deliveryProfile = false
+	}
+}
+
+// AgentPreset returns the current session role setting (never empty).
+func (a *Agent) AgentPreset() string {
+	if a == nil {
+		return string(agentpreset.Balanced)
+	}
+	if v := a.agentPreset.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return string(agentpreset.Normalize(s))
+		}
+	}
+	if a.deliveryProfile {
+		return string(agentpreset.Delivery)
+	}
+	return string(agentpreset.Balanced)
+}
+
+// TurnPolicy returns the frozen TaskPolicy for the active turn, if any.
+func (a *Agent) TurnPolicy() (taskpolicy.TaskPolicy, bool) {
+	if a == nil || !a.turnPolicySet {
+		return taskpolicy.TaskPolicy{}, false
+	}
+	return a.turnPolicy, true
 }
 
 func usageSourceOrDefault(source, fallback string) string {
@@ -1506,32 +1558,25 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 }
 
 // Run appends the user input and drives the tool loop until the model returns a
-// final answer (no tool calls), the context is cancelled, or the provider errors.
-// With maxSteps <= 0 the loop is unbounded — the natural termination is the model
-// finishing, and the real safety bounds are user cancellation and compaction, not
-// a round count. A positive maxSteps imposes an optional hard guard, surfaced as
-// a resumable notice when hit.
-// Run is the agent lifecycle entry point: lifecycle setup, turn initialization,
-// tool-round loop, and deferred cleanup. Turn policy lives in beginRunTurn /
-// runToolLoop / handleFinalResponse / handleToolRound so the state machine stays
-// readable without changing provider-visible behavior or lock ownership.
+// final answer, the context is cancelled, or the provider errors. maxSteps <= 0
+// leaves the loop unbounded here: bounding it is the host's call, and the
+// adaptive stop is the no-progress ladder rather than a round count. Turn policy
+// lives in beginRunTurn / runToolLoop / handleFinalResponse / handleToolRound.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	runLimitHostOwned := false
-	runPauseAfterFinal := false
 	if limit, ok := runStepLimitFromContext(ctx); ok {
-		if !limit.defaultOnly || a.maxSteps <= 0 {
-			runMaxSteps = limit.steps
-			runLimitHostOwned = true
-			runPauseAfterFinal = limit.pauseAfterFinal
-			if limit.key != "" {
-				runMaxStepsKey = limit.key
-			}
+		runMaxSteps = limit.steps
+		runLimitHostOwned = true
+		if limit.key != "" {
+			runMaxStepsKey = limit.key
 		}
 	}
-	a.recoveryRunSeq.Add(1)
-	if a.deliveryProfile && a.workspaceLease != nil {
+	a.recovery.runSeq.Add(1)
+	// All role settings participate in the workspace lease for the run; the
+	// exclusive write lock is still acquired lazily on the first real writer.
+	if a.workspaceLease != nil {
 		a.workspaceLease.BeginRun()
 		defer a.workspaceLease.EndRun()
 	}
@@ -1580,97 +1625,8 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
-	state.runPauseAfterFinal = runPauseAfterFinal
 	state.workDurationMs = workDurationMs
 	return a.runToolLoop(ctx, state)
-}
-
-// observeMissingToolCallReasoning classifies a thinking-mode tool-call turn and
-// claims the single silent retry allowed for its active compatibility incident.
-// DeepSeek requires provider-issued thinking content to be replayed, so a
-// missing value is retried once before tools execute. Persistent broken rounds
-// use the existing exact-configuration cooldown; a healthy round resolves the
-// incident after three consecutive healthy turns and re-arms a future isolated
-// regression (#6259, #7059).
-func (a *Agent) observeMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) (missing, shouldRetry bool) {
-	if len(calls) == 0 || !provider.WarnOnMissingToolCallReasoning(a.prov) {
-		return false, false
-	}
-	fingerprint := provider.MissingToolCallReasoningWarningFingerprint(a.prov)
-	observedAt := time.Now()
-	if strings.TrimSpace(reasoning) != "" {
-		if a.missingReasoningWarnState == nil {
-			if a.warnedMissingToolCallReasoning {
-				a.missingReasoningHealthyStreak++
-				if a.missingReasoningHealthyStreak >= missingReasoningHealthyResolveStreak {
-					a.warnedMissingToolCallReasoning = false
-					a.missingReasoningHealthyStreak = 0
-				}
-			}
-			return false, false
-		}
-		shouldResolve := !a.missingReasoningWarnStateChecked || a.warnedMissingToolCallReasoning
-		if shouldResolve {
-			result := missingReasoningResolveResult{Recorded: true, Resolved: true}
-			if pending := a.missingReasoningWarnPendingResolveAt; !pending.IsZero() {
-				result = a.missingReasoningWarnState.resolveAt(fingerprint, pending)
-				if result.Recorded {
-					a.missingReasoningWarnPendingResolveAt = time.Time{}
-				}
-			}
-			if result.Recorded {
-				result = a.missingReasoningWarnState.resolveAt(fingerprint, observedAt)
-			}
-			if !result.Recorded {
-				if observedAt.After(a.missingReasoningWarnPendingResolveAt) {
-					a.missingReasoningWarnPendingResolveAt = observedAt
-				}
-				a.warnedMissingToolCallReasoning = true
-				a.missingReasoningWarnStateChecked = false
-			} else if result.Resolved {
-				a.warnedMissingToolCallReasoning = false
-				a.missingReasoningWarnStateChecked = true
-			} else {
-				a.warnedMissingToolCallReasoning = true
-				a.missingReasoningWarnStateChecked = false
-			}
-		}
-		return false, false
-	}
-	a.missingReasoningHealthyStreak = 0
-	if s := a.missingReasoningWarnState; s != nil {
-		stateReady := true
-		alreadyActive := a.warnedMissingToolCallReasoning
-		if pending := a.missingReasoningWarnPendingResolveAt; !pending.IsZero() {
-			result := s.resolveAt(fingerprint, pending)
-			stateReady = result.Recorded
-			if result.Recorded {
-				a.missingReasoningWarnPendingResolveAt = time.Time{}
-				if result.Resolved {
-					alreadyActive = false
-					a.warnedMissingToolCallReasoning = false
-				}
-			}
-		}
-		claimed := stateReady && s.claimAt(fingerprint, observedAt)
-		if !claimed || alreadyActive {
-			// This exact configuration already attempted recovery for the active
-			// incident, so keep the empty-key fallback without doubling requests.
-			a.warnedMissingToolCallReasoning = true
-			a.missingReasoningWarnStateChecked = true
-			return true, false
-		}
-		if !stateReady {
-			a.missingReasoningWarnStateChecked = false
-		}
-	} else if a.warnedMissingToolCallReasoning {
-		return true, false
-	}
-	a.warnedMissingToolCallReasoning = true
-	if a.missingReasoningWarnPendingResolveAt.IsZero() {
-		a.missingReasoningWarnStateChecked = true
-	}
-	return true, true
 }
 
 // ReadinessResult is the host-consumable outcome of the Delivery final-answer
@@ -2607,186 +2563,6 @@ func (a *Agent) withPreviewFileDiffs(ctx context.Context, calls []provider.ToolC
 		}
 	}
 	return out
-}
-
-// stormBreakThreshold is how many times in a row the same tool may fail the same
-// way before the loop stops echoing the raw error back and instead returns a
-// directive to change approach. Two natural self-corrections are healthy; the
-// third identical failure is a death-spiral — the dominant case being a tool call
-// whose arguments are truncated at the output-token ceiling, which the model then
-// re-emits (re-worded but still over-long), truncating the same way again.
-const stormBreakThreshold = 3
-
-// repeatSuccessBreakThreshold is how many identical write-like successes the
-// agent allows before refusing another copy in the same user turn. Two gives the
-// model room for a natural self-correction; the third repeat is usually a
-// no-op/write loop and should be redirected to a different tool or final answer.
-const repeatSuccessBreakThreshold = 2
-
-const (
-	// todoProgressNudgeRounds is the first adaptive checkpoint. The host asks
-	// the model to reassess, but keeps the turn alive so it can recover.
-	todoProgressNudgeRounds = 8
-	// maxTodoStallRounds pauses only after the reassessment also failed to
-	// produce a new completion or unique host-observed work receipt.
-	maxTodoStallRounds = 16
-)
-
-func todoProgressNudgeMessage(rounds int) string {
-	return fmt.Sprintf("Host progress check: the current todo has produced no new completion, unique read, command, or mutation for %d tool-call rounds. Reassess before using more tools: sign off the current item if it is done, narrow the remaining work without replacing the active item, or explain/ask about a real blocker. Do not repeat reads, commands, or writes just to reset this guard.", rounds)
-}
-
-// loopGuardBlockErrMsg is the errMsg carried by a repeat-success loop-guard
-// block. applyStormBreaker matches it to arm the final-readiness loop-guard
-// pass, since that guard also invites the model to report the blocker.
-const loopGuardBlockErrMsg = "blocked by loop guard"
-
-// applyStormBreaker detects a run of zero-progress turns and, past the
-// threshold, rewrites the model-facing result (results[0]) into a directive to
-// change approach. Two detectors, because a stuck model varies its retries two
-// ways. The signature detector keys on each call's (tool, error/blocker) — not
-// its args — since a stuck model reworks the arguments cosmetically while
-// hitting the same host refusal or failure (see the stormSig field doc). The
-// streak detector counts consecutive turns in which every call was blocked,
-// regardless of shape: rotating tools, reordering a batch, or a blocker whose
-// text varies per attempt escapes the signature but is still zero progress —
-// only a host refusal (not a plain error) proves that, so the streak requires
-// blocked outcomes. Any success resets both. When a guard fires — or when a
-// call in the batch was already blocked by the per-call repeat-success guard —
-// the final-readiness loop-guard pass is armed so the model may report the
-// blocker (see loopGuardAllowsFinal). The hard maxSteps guard remains the
-// ultimate backstop; this just keeps the loop from burning that whole budget
-// bouncing off the same host refusals.
-func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutcome, results []string, receiptMark int) string {
-	allBlocked := len(outcomes) > 0
-	for _, outcome := range outcomes {
-		if !outcome.blocked {
-			allBlocked = false
-			break
-		}
-	}
-	if allBlocked {
-		a.blockedTurnStreak++
-	} else {
-		a.blockedTurnStreak = 0
-	}
-	for _, outcome := range outcomes {
-		if outcome.blocked && outcome.errMsg == loopGuardBlockErrMsg {
-			a.armLoopGuardPass(receiptMark)
-			break
-		}
-	}
-
-	sig, ok := batchStormSignature(calls, outcomes)
-	switch {
-	case !ok:
-		a.stormSig, a.stormCount = "", 0
-	case sig != a.stormSig:
-		a.stormSig, a.stormCount = sig, 1
-	default:
-		a.stormCount++
-	}
-	stormHit := ok && a.stormCount >= stormBreakThreshold
-	streakHit := allBlocked && a.blockedTurnStreak >= stormBreakThreshold
-	if !stormHit && !streakHit {
-		return ""
-	}
-
-	const blockedAdvice = "Change approach: do not keep retrying a blocked tool by changing the tool, command, or arguments. Respect the permission, plan-mode, hook, or loop-guard blocker; use an already-allowed tool, ask the user for the specific approval or choice if appropriate, or explain the blocker in your final answer."
-	var guard, detail string
-	if stormHit {
-		subject := fmt.Sprintf("%q", calls[0].Name)
-		short := calls[0].Name
-		if len(calls) > 1 {
-			subject = fmt.Sprintf("this batch of %d tool calls", len(calls))
-			short = fmt.Sprintf("a batch of %d calls", len(calls))
-		}
-		anyBlocked := false
-		for _, outcome := range outcomes {
-			if outcome.blocked {
-				anyBlocked = true
-				break
-			}
-		}
-		action := "failed"
-		advice := "Change approach: if an argument is being truncated, write less in one call and split the work into several smaller calls; otherwise fix the arguments, use a different tool, or explain the blocker in your final answer."
-		if anyBlocked {
-			action = "been blocked or failed"
-			advice = blockedAdvice
-		}
-		guard = fmt.Sprintf(
-			"[loop guard] %s has now %s %d times in a row with the same host response. Re-sending it — even with the wording changed — will not help: the calls keep hitting the same outcome. %s",
-			subject, action, a.stormCount, advice)
-		detail = fmt.Sprintf(
-			"loop guard: %s hit the same host response %d× — nudging the model to change approach",
-			short, a.stormCount)
-	} else {
-		guard = fmt.Sprintf(
-			"[loop guard] every tool call in the last %d turns has been blocked by the host (permission, plan mode, hook, or loop guard). Switching tools, reordering calls, or rewording arguments will not help while the blockers stand. %s",
-			a.blockedTurnStreak, blockedAdvice)
-		detail = fmt.Sprintf(
-			"loop guard: every tool call blocked %d turns in a row — nudging the model to change approach",
-			a.blockedTurnStreak)
-	}
-	results[0] = outcomes[0].output + "\n\n" + guard
-	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard, Text: loopGuardNoticeText(), Detail: detail})
-	a.armLoopGuardPass(receiptMark)
-	return detail
-}
-
-func loopGuardNoticeText() string {
-	return "The assistant is not making progress; asking it to change approach."
-}
-
-// batchStormSignature returns a per-turn fixation signature — each call's
-// (name, error/blocker) in order — and ok=true only when every call errored or
-// was blocked. ok=false (any success) means the turn made progress, so the
-// caller resets the counter. Keying on the host response rather than the args is
-// deliberate: a stuck model reworks the arguments while hitting the same
-// response, so identical-args matching would miss the loop.
-func batchStormSignature(calls []provider.ToolCall, outcomes []toolOutcome) (string, bool) {
-	if len(calls) == 0 {
-		return "", false
-	}
-	var sb strings.Builder
-	for i := range calls {
-		if outcomes[i].errMsg == "" {
-			return "", false
-		}
-		sb.WriteString(calls[i].Name)
-		sb.WriteByte(0)
-		sb.WriteString(outcomes[i].errMsg)
-		sb.WriteByte(0)
-	}
-	return sb.String(), true
-}
-
-// toolOutcome is one tool call's result. output is the first-visible bounded
-// form the model sees; rawOutput is the full original when truncation applied
-// (empty when identical so we avoid double storage). images ride outside text.
-type toolOutcome struct {
-	output                     string
-	rawOutput                  string // full original when different from output
-	images                     []string
-	blocked                    bool
-	errMsg                     string
-	truncated                  bool
-	truncMsg                   string
-	resolved                   bool
-	resolvedName               string
-	capabilityID               string
-	resolvedReadOnly, executed bool
-	workspaceMutation          *event.WorkspaceMutation
-	effective                  workspaceEffectiveCall
-	// execution is local shell metadata (optional). Provider messages strip it
-	// via ModelMessages; UI/event sinks surface it on ToolResult cards.
-	execution *tool.ShellExecution
-	// recoveryGeneration is the gate generation captured before execution so
-	// ObserveResult can ignore stale results after a mode switch.
-	recoveryGeneration uint64
-	// recoveryStopTurn is set when Auto Episode budgets are exhausted.
-	recoveryStopTurn   bool
-	recoveryStopReason string
 }
 
 // completedMCPConnect recognizes a synthetic cache-miss connect call whose
