@@ -1317,9 +1317,8 @@ type AgentConfig struct {
 	CompactForceRatio   float64 `toml:"compact_force_ratio"`
 	// ContextEditing is retired; native tool clearing is no longer an auto path.
 	ContextEditing string `toml:"context_editing"`
-	// Keep controls which compactable messages stay verbatim beyond the current
-	// user-fact/digest floor and recent tail. Empty uses the conservative default
-	// of keeping error tool results.
+	// Keep and RecentKeep are deprecated compatibility fields. They remain
+	// readable and writable but Harness-style compaction ignores them.
 	Keep       []string `toml:"keep"`
 	RecentKeep int      `toml:"recent_keep"`
 	// ColdResumePrune elides stale tool results when a session reopens past the
@@ -1849,7 +1848,7 @@ func Default() *Config {
 			// Soft/snip/force are load-only compatibility; CompactRatio alone drives maintenance.
 			SoftCompactRatio:       0,
 			ToolResultSnipRatio:    0,
-			CompactRatio:           0.85,
+			CompactRatio:           0.80,
 			CompactForceRatio:      0,
 			ContextEditing:         "",
 			MaxSubagentDepth:       2,

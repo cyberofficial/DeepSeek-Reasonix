@@ -56,7 +56,7 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, cu
   const usagePercentages = contextWindowPercentages(used, windowTokens);
   const rawUsagePct = usagePercentages.raw;
   const usagePct = usagePercentages.display;
-  const compactRatio = context?.compactRatio && context.compactRatio > 0 ? context.compactRatio : 0.85;
+  const compactRatio = context?.compactRatio && context.compactRatio > 0 ? context.compactRatio : 0.80;
   const compactPct = Math.round(compactRatio * 100);
   const status = contextWindowStatus(rawUsagePct, compactPct);
 

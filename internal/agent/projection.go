@@ -48,6 +48,12 @@ const (
 	CompactionModeSnip       = "snip"
 )
 
+const (
+	SummaryInputCachePrefix        = "cache_prefix"
+	SummaryInputExtensionRewritten = "extension_rewritten"
+	SummaryInputNonPrefix          = "non_prefix"
+)
+
 // ContextProjection is the model-visible view of a session. The canonical
 // transcript in Session.Messages is never replaced by this structure.
 type ContextProjection struct {
@@ -151,6 +157,7 @@ type CompactionTelemetry struct {
 	CacheWriteTokens  int    `json:"cache_write_tokens"`
 	RequestCount      int    `json:"request_count"`
 	ProviderRequestID string `json:"provider_request_id,omitempty"`
+	SummaryInputMode  string `json:"summary_input_mode,omitempty"`
 	Error             string `json:"error,omitempty"`
 }
 
@@ -244,16 +251,52 @@ func summaryContentHash(summary string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// coveredPrefixHash fingerprints the provider-visible prefix of msgs[:n].
-// ModelMessages strips local fields and SanitizeToolPairing applies the same
-// deterministic repair used on the wire, keeping hashes stable when LoadSession
-// persists an equivalent repair while still detecting real prefix edits.
+// coveredPrefixHash fingerprints the current model-visible prefix of msgs[:n].
+// Tool RawContent is promoted here because it is what new requests send to the
+// provider; bounded Content remains only the compatibility representation for
+// older readers. SanitizeToolPairing applies the same deterministic repair used
+// on the wire, keeping hashes stable when LoadSession repairs a transcript.
 func coveredPrefixHash(msgs []provider.Message, n int) string {
+	if n <= 0 || n > len(msgs) {
+		return ""
+	}
+	visible := modelInputMessages(msgs[:n])
+	return providerVisibleFingerprint(provider.SanitizeToolPairing(visible))
+}
+
+// boundedCoveredPrefixHash reproduces the pre-RawContent v3 fingerprint. It
+// is accepted only for reading old sidecars; every new checkpoint writes the
+// current hash above so a later RawContent edit cannot reuse stale state.
+func boundedCoveredPrefixHash(msgs []provider.Message, n int) string {
 	if n <= 0 || n > len(msgs) {
 		return ""
 	}
 	visible := provider.ModelMessages(msgs[:n])
 	return providerVisibleFingerprint(provider.SanitizeToolPairing(visible))
+}
+
+// migrateBoundedCoveredPrefixHash upgrades a sidecar written before tool
+// RawContent became model-visible. Keeping this as an explicit load migration,
+// rather than a permanent validation fallback, ensures a later RawContent edit
+// invalidates the projection once the sidecar has been observed by this version.
+func migrateBoundedCoveredPrefixHash(st *CompactionState, msgs []provider.Message) bool {
+	if st == nil {
+		return false
+	}
+	n := st.Projection.CoveredCount
+	stored := st.Projection.CoveredPrefixHash
+	currentHash := coveredPrefixHash(msgs, n)
+	if stored == "" || currentHash == "" || stored == currentHash ||
+		stored != boundedCoveredPrefixHash(msgs, n) {
+		return false
+	}
+	st.Projection.CoveredPrefixHash = currentHash
+	if st.LastReceipt != nil && st.LastReceipt.CoveredPrefixHash == stored {
+		receipt := *st.LastReceipt
+		receipt.CoveredPrefixHash = currentHash
+		st.LastReceipt = &receipt
+	}
+	return true
 }
 
 // legacyCoveredPrefixHash reproduces the v1.25.2 fingerprint. It is used only
@@ -280,9 +323,9 @@ func migrateLegacyCoveredPrefixHash(st *CompactionState, current, preRepair []pr
 	if stored == "" || legacyCoveredPrefixHash(preRepair, n) != stored {
 		return false
 	}
-	preRepairWireHash := coveredPrefixHash(preRepair, n)
+	preRepairWireHash := boundedCoveredPrefixHash(preRepair, n)
 	currentHash := coveredPrefixHash(current, n)
-	if currentHash == "" || preRepairWireHash != currentHash {
+	if currentHash == "" || preRepairWireHash != boundedCoveredPrefixHash(current, n) {
 		return false
 	}
 	st.Projection.CoveredPrefixHash = currentHash

@@ -490,7 +490,7 @@ export function ContextPanel({
   const usagePercentages = contextWindowPercentages(usedTokens, windowTokens);
   const rawUsagePct = usagePercentages.raw;
   const usagePct = usagePercentages.display;
-  const compactRatio = context?.compactRatio && context.compactRatio > 0 ? context.compactRatio : 0.85;
+  const compactRatio = context?.compactRatio && context.compactRatio > 0 ? context.compactRatio : 0.80;
   const compactPct = Math.round(compactRatio * 100);
   const reportedTriggerTokens = context?.maintenance?.triggerTokens ?? 0;
   const triggerTokens = reportedTriggerTokens > 0

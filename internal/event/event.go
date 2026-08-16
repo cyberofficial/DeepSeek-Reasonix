@@ -162,13 +162,15 @@ const (
 	StreamAttemptCommit  StreamAttemptAction = "commit"
 )
 
-// RetryScope distinguishes connection+header retries from body-phase stream
-// retries. Older clients ignore the empty/unknown value.
+// RetryScope distinguishes connection+header retries, body-phase stream
+// retries, and host-classified protocol recovery. Older clients ignore an
+// unknown value and still render the generic retry state.
 type RetryScope string
 
 const (
-	RetryScopeHeaders RetryScope = "headers"
-	RetryScopeStream  RetryScope = "stream"
+	RetryScopeHeaders  RetryScope = "headers"
+	RetryScopeStream   RetryScope = "stream"
+	RetryScopeProtocol RetryScope = "protocol"
 )
 
 // StreamAttemptInfo carries host-local bookkeeping for one sampling attempt.

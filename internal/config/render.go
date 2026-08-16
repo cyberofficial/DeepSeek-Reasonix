@@ -236,16 +236,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# reasoning_language = \"zh\"   # visible reasoning language: auto|zh|en\n")
 	}
-	fmt.Fprintf(&b, "compact_ratio       = %s   # sole auto trigger; presets 0.70/0.80/0.85 (default 0.85)\n", formatFloat(c.Agent.CompactRatio))
+	fmt.Fprintf(&b, "compact_ratio       = %s   # sole auto trigger; presets 0.70/0.80/0.85 (default 0.80)\n", formatFloat(c.Agent.CompactRatio))
 	if c.Agent.Keep != nil {
-		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
+		fmt.Fprintf(&b, "keep                = %s   # deprecated compatibility field; ignored at runtime\n", renderStringArray(c.Agent.Keep))
 	} else {
-		b.WriteString("# keep                = [\"errors\"]   # compaction keep policy: errors, user_marked\n")
+		b.WriteString("# keep                = [\"errors\"]   # deprecated compatibility field; ignored at runtime\n")
 	}
 	if c.Agent.RecentKeep > 0 {
-		fmt.Fprintf(&b, "recent_keep         = %d   # minimum recent messages kept verbatim\n", c.Agent.RecentKeep)
+		fmt.Fprintf(&b, "recent_keep         = %d   # deprecated compatibility field; ignored at runtime\n", c.Agent.RecentKeep)
 	} else {
-		b.WriteString("# recent_keep         = 2   # minimum recent messages kept verbatim\n")
+		b.WriteString("# recent_keep         = 2   # deprecated compatibility field; ignored at runtime\n")
 	}
 	if len(c.Agent.PlanModeReadOnlyCommands) > 0 {
 		fmt.Fprintf(&b, "plan_mode_read_only_commands = %s   # legacy compatibility only; Plan bash uses Permissions\n", renderStringArray(c.Agent.PlanModeReadOnlyCommands))

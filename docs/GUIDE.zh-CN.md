@@ -63,7 +63,7 @@ reasoning_language = "auto"      # 可见思考过程语言：auto|zh|en
 # max_subagent_depth = 2              # 子代理嵌套委派深度；设为 1 可恢复旧的单层边界
 # max_subagent_concurrency = 6        # 会话级子代理总并发（task/fleet/skills）
 # max_parallel_writers = 3            # 互不重叠 write_paths 时的并行写入上限
-# compact_ratio 是唯一自动维护阈值（默认 0.85；预设 0.70/0.80/0.85）
+# compact_ratio 是唯一自动维护阈值（默认 0.80；预设 0.70/0.80/0.85）
 # max_output_tokens = 0            # 自动：官方 DeepSeek 空间充足时省略字段（服务端 384K），临界时裁剪
 # max_output_tokens = 32768        # 可选控费上限，仍可按物理剩余继续下调
 # max_output_tokens = 65536        # 可选控费上限

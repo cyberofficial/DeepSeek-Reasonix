@@ -254,19 +254,28 @@ canonical transcript and installs a short **provider-visible checkpoint** only
 when the sole automatic threshold is crossed.
 
 - Each provider declares `context_window` (tokens). The only automatic trigger is
-  `agent.compact_ratio` (default **0.85**; presets 0.70 / 0.80 / 0.85; range
+  `agent.compact_ratio` (default **0.80**; presets 0.70 / 0.80 / 0.85; range
   0.65–0.85).
   `triggerTokens = floor(context_window × compact_ratio)`.
-- **Below the trigger** history is never rewritten: no summary, no prune/snip
-  projection, no sidecar write, no projection-version bump, no maintenance event.
-  Any rewrite would invalidate the prompt cache from that point on.
-- **At the trigger** Reasonix runs **one** summary transaction:
-  `stable prefix + one structured digest + recent verbatim tail`.
-  Acceptance (normal path): candidate ≤ 50% of the window, strictly smaller than
-  the source, and below `triggerTokens`. Candidates are **not** padded toward 50%.
-  Typical landings are about 10%–30% of the window.
-  Internal construction budgets (not user settings):
-  `recentTailBudget = clamp(window×10%, 32K, 96K)`, summary output max **16K**.
+- **Below the trigger** the model receives complete tool `RawContent` from a
+  temporary request projection; no sidecar is written. Durable `Content` remains
+  bounded for older Reasonix readers.
+- **At the trigger** one singleflight maintenance transaction first persistently
+  prunes every tool result over 8192 Unicode code points to `4096 head +
+  "[... tool result middle pruned ...]" + 1024 tail`. If this clears pressure,
+  no summary request is made. Otherwise Reasonix summarizes the old contiguous
+  prefix and retains the newest **16%** of the context window verbatim, aligned so
+  assistant tool calls and tool results are never split.
+- The summary request replays the original system message, the selected message
+  prefix, and the ordinary request's tool schemas, then appends one final user
+  compaction instruction. This shape can reuse provider KV cache. Output is capped
+  at **8192 tokens**. A pressure run may make one additional convergence summary
+  (at most two successful summaries total); overflow makes at most one summary and
+  retries the original request at most once after projection-version progress.
+- A checkpoint must be strictly smaller than the replaced full request. Summary
+  timeout/error/empty/max-token results never produce a mechanical digest. Below
+  the hard ceiling the latest durable projection continues; at overflow or the
+  hard ceiling an insufficient prune returns `ErrCompactionRequired`.
 - Users inspect or change the threshold with
   `reasonix config compact-ratio [--local] [VALUE]`. Project config overrides the
   user-global value used by desktop and new CLI sessions. UI always shows the
@@ -287,11 +296,10 @@ when the sole automatic threshold is crossed.
     the physical remainder. A negative value force-omits optional wire limits;
     if the known auto budget no longer fits, Reasonix compacts instead of
     overriding that choice.
-- Giant tool results are bounded **once**, on first entry to the model:
-  `Content` is the stable ≤32KB visible form; `RawContent` holds the full original
-  only when they differ. Maintenance never rewrites old tool bodies.
-  `ModelMessages` strips `RawContent` so provider serialization and cache hashes
-  never include it.
+- Canonical tool storage remains backward compatible: `Content` is a stable
+  ≤32KB form and `RawContent` holds the full original. New request projections
+  promote tool `RawContent` below pressure; prune projections never rewrite either
+  canonical field. Older supported readers therefore remain bounded.
 - Automatic maintenance is planned once in `ContextManager.Prepare` from the
   current projection plus the append-only canonical tail. The canonical
   transcript is never rewritten. Subsequent thresholds merge
@@ -303,9 +311,10 @@ when the sole automatic threshold is crossed.
   `compact_force_ratio`, `cold_resume_prune`, `context_editing`) are removed on
   ordinary start and ignored at runtime. Native provider tool clearing is not
   used; every provider uses the local summary checkpoint path.
-- Keep policy (`keep` / `recent_keep`) and the active tool turn remain protected
-  content. Restart restores an existing checkpoint without re-summarizing or
-  replaying timeline cards.
+- `keep` / `recent_keep` remain readable and round-trip for compatibility but are
+  deprecated and ignored by compaction. Old user turns, failed tool results, and
+  `[[keep]]` messages enter the summary prefix. Restart restores an existing
+  checkpoint without re-summarizing or replaying timeline cards.
 - Full history remains in the session transcript. The read-only `history` tool
   provides BM25 retrieval over sessions; new summary checkpoints do not create
   prune archives.
@@ -348,52 +357,19 @@ when the sole automatic threshold is crossed.
   See [`SESSION_MEMORY_RETRIEVAL.md`](SESSION_MEMORY_RETRIEVAL.md) for the
   detailed implementation contract.
 
-**What survives a fold.** Verbatim, at every compaction: the system prompt, the
-first user turn when it is small enough to be a brief, **every user turn in the
-fold region that fits the retention budget**, and the recent tail. The messages
-the keep policy protects also survive, though a failure with a recorded execution
-keeps only its failure-carrying lines. Everything else is **best-effort** — it
-reaches the summarizer and survives only as well as the digest captured it.
+**What survives a fold.** The system prompt and newest 16% tail survive verbatim.
+Every older model-visible message forms one contiguous summary prefix, including
+user turns, failed tool results, prior digests, and `[[keep]]` messages. Exact
+older wording remains available in the canonical transcript and through the
+read-only `history` tool. `keep` and `recent_keep` are compatibility-only fields.
 
-That protection has to hold across *repeated* folds, which is why a stored
-projection keeps the host's `ToolExecution` record while a provider request does
-not. `KeepErrors` classifies a failure from that record rather than from text,
-because a real `go test` log opens with `=== RUN` and no prefix match can see
-it; a projection written without the record would leave the *next* fold unable
-to classify what the current one just protected. The strip therefore belongs at
-the provider boundary — `ModelMessages` — and not at projection write time,
-where `ProjectionMessages` preserves it.
+Subsequent folds merge the current digest with newer old history into one digest.
+Compaction only writes a projection: canonical storage keeps every original, so
+a missed detail stays recoverable through `history`.
 
-User turns are held to a different standard than the work they govern. A
-constraint stated at turn 4 ("do not change the public API") exists nowhere but
-the transcript, while the code it constrains stays re-derivable from the
-workspace — so the asymmetry of loss, not the token count, decides. Retention is
-bounded rather than unconditional, because hoisting user turns without a budget
-is what padded an earlier revision's candidates past the acceptance ceiling,
-failing compaction outright instead of degrading it. One turn may spend up to
-1500 tokens and all of them together `min(8192, window×5%)`, oldest first — the
-recent tail already covers the newest turns, and an old turn has survived more
-folds than a new one. Unlike the keep policy this is not scoped to the latest
-digest, so a constraint keeps its protection across repeated compaction.
-
-A turn past those bounds folds like any other content. Prefix it with `[[keep]]`
-(keep policy `user_marked`, on by default) to hold it verbatim regardless of
-size. That drop is never silent: compaction telemetry carries `user_kept` and
-`user_dropped` counts, and a committed checkpoint that had to fold one of your
-turns emits a warning naming `[[keep]]` — the projection reads as complete
-either way, so the count is the only thing that distinguishes them.
-
-Two properties bound that loss. Each fold re-derives its digest from the
-canonical transcript rather than from the previous digest, so digests do not
-chain and repeated compaction does not compound summarizer drift. And compaction
-only ever writes a projection: the canonical transcript keeps every original, so
-a folded detail stays recoverable through the `history` tool and the archive
-(`reasonix/archive/<timestamp>.jsonl`) even when the digest missed it.
-
-This is the **only** point where the prompt prefix changes — a deliberate, rare
-"cache-reset point". Between compactions the session grows prepend-only and
-stays cache-friendly, so cache hit rate (the key observability signal) stays
-high. `context_window = 0` disables compaction for an instance.
+Prune and summary commits are deliberate cache-reset points. Between maintenance
+runs the session remains append-only and cache-friendly. `context_window = 0`
+disables automatic compaction for an instance.
 
 ### 3.7 Permissions (`internal/permission`) — per-call gating
 

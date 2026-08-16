@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,10 +82,15 @@ type mockDeepSeek struct {
 func (m *mockDeepSeek) handler(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 
-	// Compaction issues a tool-less summarize request whose system prompt is the
-	// summarizer prompt — answer it with a short summary and DON'T let it pollute
-	// the conversation-prefix bookkeeping.
+	// Compaction appends one final instruction to the ordinary cached prefix.
+	// Answer it with a short summary and do not let it replace conversation
+	// bookkeeping; the replayed prefix itself must match the prior request.
 	if isSummarizeRequest(body) {
+		msgs := decodeMessages(body)
+		replayed := msgs[:len(msgs)-1]
+		if len(m.prevMessages) > 0 && commonPrefixMsgs(m.prevMessages, replayed) != len(replayed) {
+			m.t.Errorf("summary request did not replay a byte-identical cached conversation prefix")
+		}
 		writeSSE(w, m.t,
 			streamChunk(deltaText("- goal: keep going\n- decisions: none\n- pending: continue")),
 			finishChunk("stop"),
@@ -229,80 +235,19 @@ func TestCacheHitClimbsWithoutCompaction(t *testing.T) {
 	}
 }
 
-// TestCacheHitSurvivesTooSmallWindow covers a window too small to summarize one
-// turn. Maintenance must stop rewriting the same prefix and let cache hits
-// recover instead of collapsing after every tool result.
-func TestCacheHitSurvivesTooSmallWindow(t *testing.T) {
+// A window too small to hold even the system and active tail cannot be repaired
+// by fabricating a mechanical digest.
+func TestTooSmallWindowReturnsCompactionRequired(t *testing.T) {
 	mock := &mockDeepSeek{t: t, withTools: true, reasoning: longReasoning, toolRounds: 30}
 	srv := httptest.NewServer(http.HandlerFunc(mock.handler))
 	defer srv.Close()
 
 	a, sink := newAgent(t, srv.URL, mock.tools(), 900 /*window tok*/, 4 /*recentKeep*/)
 
-	if err := a.Run(context.Background(), strings.Repeat("please consider this requirement. ", 6)); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := a.Run(context.Background(), strings.Repeat("please consider this requirement. ", 6)); !errors.Is(err, ErrCompactionRequired) {
+		t.Fatalf("Run = %v, want ErrCompactionRequired", err)
 	}
-
-	t.Logf("==== hit-rate curve, too-small window (900 tok) ====")
-	collapses := 0
-	var collapseAt []int
-	for i, u := range sink.usages {
-		r := hitRate(u)
-		marker := ""
-		if i > 0 && r+20 < hitRate(sink.usages[i-1]) {
-			marker = "   <<< collapse"
-			collapses++
-			collapseAt = append(collapseAt, i)
-		}
-		t.Logf("step %2d: prompt=%5d hit=%5d miss=%4d → cache %3d%%%s", i, u.PromptTokens, u.CacheHitTokens, u.CacheMissTokens, r, marker)
-	}
-
-	for _, n := range sink.notices {
-		t.Logf("notice: %s", n)
-	}
-	for _, m := range sink.maintenance {
-		t.Logf("maintenance: status=%s trigger=%s version=%d input=%d result=%d saved=%d",
-			m.Status, m.Trigger, m.ProjectionVersion, m.InputTokens, m.ResultTokens, m.SavedTokens)
-	}
-	if sink.blocked {
-		t.Log("context maintenance entered a durable blocked state")
-	}
-
-	applied := 0
-	for _, m := range sink.maintenance {
-		if m.Status == "applied" && m.Action == "summary" {
-			applied++
-		}
-	}
-	// A physical recovery may rewrite the prefix again after enough new input
-	// accumulates, but never without an applied, token-saving checkpoint.
-	if collapses > applied {
-		t.Errorf("cache collapses=%d exceed applied checkpoints=%d", collapses, applied)
-	}
-	// Even in this pathological window, recovery must not run once per tool
-	// result. Each completed recovery cycle gets several stable-prefix requests
-	// and climbs back to a useful hit rate before the next required rewrite.
-	for i := 1; i < len(collapseAt); i++ {
-		if gap := collapseAt[i] - collapseAt[i-1]; gap < 4 {
-			t.Errorf("cache rewrites only %d requests apart at %d and %d; want at least 4", gap, collapseAt[i-1], collapseAt[i])
-		}
-	}
-	for i, start := range collapseAt {
-		end := len(sink.usages)
-		if i+1 < len(collapseAt) {
-			end = collapseAt[i+1]
-		}
-		if end-start < 4 { // final partial cycle may end before the cache recovers
-			continue
-		}
-		peak := 0
-		for _, rate := range usageRates(sink.usages[start+1 : end]) {
-			peak = max(peak, rate)
-		}
-		if peak < 85 {
-			t.Errorf("cache peak after rewrite at request %d = %d%%, want ≥85%% before the next rewrite", start, peak)
-		}
-	}
+	_ = sink
 }
 
 // TestReasoningRoundTripCost contrasts the hit-rate curve WITH vs WITHOUT the
@@ -619,8 +564,8 @@ func isSummarizeRequest(body []byte) bool {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	}
-	_ = json.Unmarshal(msgs[0], &m)
-	return m.Role == "system" && strings.Contains(m.Content, "compacting the earlier part")
+	_ = json.Unmarshal(msgs[len(msgs)-1], &m)
+	return m.Role == "user" && strings.Contains(m.Content, "Compact the preceding conversation prefix")
 }
 
 func commonPrefixMsgs(a, b []json.RawMessage) int {

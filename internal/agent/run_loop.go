@@ -129,6 +129,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// values are computed below. Cross-turn state (checkpoint, scope, failure
 	// budgets) lives in taskRuntime and is reconciled there.
 	a.turn = turnRuntime{}
+	a.turn.automaticReadinessContinuation = automaticReadinessContinuationFromContext(ctx)
 	a.resetStructuralRunGuards()
 	scope, scoped := DeliveryExecutionScopeFromContext(ctx)
 	preserveEvidence, readinessRecovered := a.beginFinalReadinessRecovery()
@@ -195,6 +196,12 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	}
 	a.turn.engine = runtimepolicy.NewEngine(a.turn.constraints)
 	a.rebuildTurnContract()
+	// Reuse an open provider/configuration circuit before projecting history or
+	// spending another pair of normal thinking-mode requests.
+	if a.beginMissingReasoningRecovery() {
+		event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
+		event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
+	}
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the source above.
@@ -405,6 +412,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 			event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
 			if shouldRetry {
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryAttempted})
+				a.emitProtocolRetry(1, provider.SupportsMissingReasoningFallback(a.svc.prov))
 				retrySink := newDeferredStreamSink(a.svc.sink)
 				retry := runAttempt(attemptID, retrySink)
 				billable = mergeSamplingUsage(billable, retry.usage)
@@ -427,12 +435,21 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 					return terminal
 				}
 				streamSink.Discard()
+				if a.reasoningReplayIssue(retry) == ReasoningReplayMissing {
+					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningDetected})
+					if fallback, ok := a.runMissingReasoningFallback(ctx, turn, &frozen, attemptID, attempt, billable, retrySink); ok {
+						return fallback
+					}
+				}
 				retry = a.finishReasoningReplayRetry(retry, retrySink, billable)
 				a.emitReasoningReplayAttemptOutcome(attemptID, attempt, retry.err)
 				return retry
 			}
 			if !shouldRetry {
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetrySuppressed})
+				if fallback, ok := a.runMissingReasoningFallback(ctx, turn, &frozen, attemptID, attempt, billable, streamSink); ok {
+					return fallback
+				}
 				event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
 				result.usage = finalizeSamplingUsage(billable, result.usage)
 				terminal := a.finishUnreplayableReasoning(result, streamSink, issue)
@@ -447,6 +464,17 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		return result
 	}
 	return last
+}
+
+func (a *Agent) emitProtocolRetry(attempt int, hasFallback bool) {
+	maxAttempts := 1
+	if hasFallback {
+		maxAttempts = 2
+	}
+	a.svc.sink.Emit(event.Event{
+		Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxAttempts,
+		RetryScope: event.RetryScopeProtocol,
+	})
 }
 
 func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error) {
@@ -519,14 +547,21 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		return false, a.gracePause(state)
 	}
 	if readiness.reason != "" {
-		// Goal/Plan and fact contradictions (open todos, sign-off, action
-		// receipts) fail the run. Ordinary Recoverable/project/review gaps
-		// become an honest Partial completion instead of a recovery error.
-		if a.closedLoopActive() || readiness.incompleteTodos > 0 || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0 {
+		// The host owns the concrete missing requirements. Return them to the
+		// controller when automatic continuation is armed (or for the existing
+		// strict/Goal path). Unarmed ordinary agents retain their Partial
+		// contract and do not unexpectedly change the direct Agent API.
+		if a.turn.automaticReadinessContinuation || a.closedLoopActive() || readiness.incompleteTodos > 0 || readiness.missingSignoff > 0 || readiness.missingActionEvidence > 0 {
 			event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessErrored, false))
 			a.pending.finalReadinessRecovery = true
 			a.persistFinalReadinessRecovery(readiness.missingIDs())
-			return false, &FinalReadinessError{Attempts: 1, Reason: readiness.reason, Missing: readiness.missingIDs()}
+			return false, &FinalReadinessError{
+				Attempts:          1,
+				Reason:            readiness.reason,
+				Missing:           readiness.missingIDs(),
+				ContinuationClass: readiness.continuationClass(),
+				ProgressKey:       readiness.progressSignature(),
+			}
 		}
 		event.RecordReadinessAudit(a.svc.sink, readiness.audit(evidence.ReadinessAllowed, a.turn.readinessRecovered))
 	}
@@ -612,8 +647,8 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		}
-		// First-visible Content is always the bounded form in results[i].
-		// Full originals ride on RawContent only when truncation applied.
+		// Content is the old-reader-safe bounded form. Full originals ride on
+		// RawContent and are promoted only on the new provider request copy.
 		if i < len(batch.outcomes) && batch.outcomes[i].rawOutput != "" && batch.outcomes[i].rawOutput != results[i] {
 			msg.RawContent = batch.outcomes[i].rawOutput
 		}

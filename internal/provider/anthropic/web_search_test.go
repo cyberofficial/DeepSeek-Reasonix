@@ -211,15 +211,15 @@ func TestBuildRequestDeepSeekReplaysThinkingBeforeServerSearch(t *testing.T) {
 	}
 }
 
-func TestBuildRequestDeepSeekDoesNotFabricateEmptyThinkingForServerSearch(t *testing.T) {
+func TestBuildRequestDeepSeekProjectsMissingThinkingServerSearchToPlainText(t *testing.T) {
 	c := &client{name: "deepseek", model: "deepseek-v4-flash", deepseek: true, thinking: "enabled", webSearch: true}
 	r := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{
 		Role: provider.RoleAssistant, Content: "answer",
 		ServerSearch: []provider.ServerSearchCall{{ID: "s1", Query: "latest", Raw: json.RawMessage(`[]`)}},
 	}}})
 	blocks := r.Messages[0].Content
-	if len(blocks) != 3 || blocks[0].Type != "server_tool_use" || blocks[1].Type != "web_search_tool_result" || blocks[2].Type != "text" {
-		t.Fatalf("empty thinking was fabricated or block order changed: %#v", blocks)
+	if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "answer" {
+		t.Fatalf("unreplayable search was not projected to plain text: %#v", blocks)
 	}
 }
 
