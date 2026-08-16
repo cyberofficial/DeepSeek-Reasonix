@@ -51,21 +51,21 @@ func (a *Agent) recoveryProposal(plan *toolCallPlan, episodeID, subject, preview
 	return RecoveryProposal{
 		AgentID:        a.recovery.agentID,
 		TaskID:         a.recovery.taskID,
-		TaskScopeID:    recoveryTaskScopeID(a.deliveryScopeID, a.recovery.runSeq.Load()),
+		TaskScopeID:    recoveryTaskScopeID(a.task.scopeID, a.recovery.runSeq.Load()),
 		EpisodeID:      episodeID,
-		TaskSummary:    a.recoveryTaskSummary,
+		TaskSummary:    a.turn.recoveryTaskSummary,
 		Tool:           plan.evidenceName,
 		Args:           plan.evidenceArgs,
 		Subject:        subject,
 		Preview:        preview,
 		ReadOnly:       plan.readOnly,
-		Mutates:        plan.mutates,
+		Mutates:        plan.effects.StateMutation,
 		Verification:   plan.verification,
 		PlanTransition: plan.planTransition,
 		// The existing rule asks whether a retry drifts from the call that
 		// failed. This asks the question the user actually approved an answer
 		// to: is this write outside the plan they agreed on.
-		ExpandedScope: plan.mutates && a.mutationEscapesPlan(plan.evidenceName, plan.evidenceArgs),
+		ExpandedScope: plan.effects.StateMutation && a.mutationEscapesPlan(plan.evidenceName, plan.evidenceArgs),
 		PlanBefore:    plan.planBefore,
 		PlanAfter:     plan.planAfter,
 		PlanDiff:      plan.planDiff,

@@ -6,7 +6,37 @@ branch.
 
 ## Unreleased
 
+### Changed
+
+- **Fact-driven execution:** Ordinary requests always enter the executor.
+  There is no automatic simple / light / full task mode and no per-turn
+  `TaskPolicy` classification. The planner runs only for an explicit Plan,
+  an approval boundary, or Goal start. The host builds verification
+  obligations from concrete tool effects and receipts. Plan, Goal,
+  permission, and sandbox stay independent. Tool schemas and the executor
+  system prefix stay byte-stable. Historical `<execution-policy>` tags remain
+  readable on old sessions and are stripped from new provider context.
+  Old `--preset`/`--profile` compatibility no-ops are unchanged.
+
 ### Fixed
+
+- **v1.24.2 session snapshot & recovery root fix:** Keep PR #7982's WAL/CAS/lease
+  safety foundation, but replace process-level "I hold a lease" ownership with a
+  generation-bound `SessionWriteAuthority`. Same-revision tool-preview/load
+  reshapes no longer false-diverge; recovery files are bounded to one path per
+  writer/lineage; empty checkpoints heal from their own WAL; projection lineage
+  rebinds across upgrade/model switch and inherits across recovery forks without
+  changing provider-visible prompt bytes. Catalog upgrades to disposable
+  `session-catalog/v3.sqlite` with recovery lineage roles
+  (`normal|covered_copy|adopted|diverged`); covered idle copies move to the
+  recoverable `.trash` using a 15-minute idle threshold applied on two early
+  sweeps (at startup and ~20 minutes later), then a 24-hour threshold on the
+  6-hour background ticker; independent diverged branches stay and are listed
+  for user choice. v1/v2 catalogs are
+  left byte-unchanged for coexistence/downgrade.
+  **v1.24.1** only hid/reclaimed already-created covered copies and fixed Windows
+  flash-window startup; **v1.24.2** stops the misclassification source and repairs
+  existing user directories without rewriting authoritative JSONL/WAL/sidecar data.
 
 - Goal now runs continuously by default: the former 16-round per-Run boundary,
   10/20/40 cross-Run quotas, default wall-clock budget, and numeric

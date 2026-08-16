@@ -10,7 +10,6 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/skill"
-	"reasonix/internal/taskpolicy"
 	"reasonix/internal/tool"
 )
 
@@ -136,9 +135,9 @@ func splitMCP(name string) (server, raw string, ok bool) {
 	return parts[0], parts[1], true
 }
 
-// capabilityGateFailure is checked during final readiness for Delivery.
+// capabilityGateFailure is checked during final readiness for closed-loop turns.
 func (a *Agent) capabilityGateFailure() string {
-	if a == nil || !a.deliveryProfile || a.capabilityLedger == nil {
+	if a == nil || !a.closedLoopActive() || a.capabilityLedger == nil {
 		return ""
 	}
 	gate := a.capabilityLedger.CheckFinalGate()
@@ -175,7 +174,7 @@ func (a *Agent) capabilityGateFailure() string {
 			a.capabilityAudit.RecordGate(true, false, false)
 		}
 		// Do not hard-block forever: once reported, allow final if no mutation pending.
-		if _, ok := a.evidence.LatestSuccessfulMutationIndex(); !ok {
+		if _, ok := a.task.ledger.LatestSuccessfulMutationIndex(); !ok {
 			return ""
 		}
 		return gate.Reason
@@ -198,14 +197,13 @@ func (a *Agent) capabilityGateFailure() string {
 }
 
 // deliveryReviewGateFailure enforces risk-adaptive structured review after the
-// latest mutation. When TaskPolicy is set, its Review level is authoritative;
-// otherwise Delivery-profile medium/high risk keeps the legacy matrix.
+// latest mutation. Contract review obligations are authoritative.
 func (a *Agent) deliveryReviewGateFailure() string {
-	if a == nil || a.evidence == nil {
+	if a == nil || a.task.ledger == nil {
 		return ""
 	}
-	// Without Delivery elevation or a forced TaskPolicy review, skip.
-	if !a.deliveryProfile && !(a.turnPolicySet && a.turnPolicy.RequiresIndependentReview()) {
+	// Without Goal/Plan closed-loop or a contract review obligation, skip.
+	if !a.closedLoopActive() && !a.requiresIndependentReview() {
 		return ""
 	}
 	if a.subagentDepth > 0 {
@@ -218,28 +216,21 @@ func (a *Agent) deliveryReviewGateFailure() string {
 		// file or run git diff/status) still applies via finalReadinessCheck.
 		return ""
 	}
-	mutation, ok := a.evidence.LatestSuccessfulMutationIndex()
+	mutation, ok := a.task.ledger.LatestSuccessfulMutationIndex()
 	if !ok {
 		return ""
 	}
 	a.emitTurnPhase(event.TurnPhaseReviewing)
-	risk := a.evidence.MutationRiskAfter(mutation)
-	// TaskPolicy may force higher review than mutation-risk alone.
-	if a.turnPolicySet {
-		switch a.turnPolicy.Review {
-		case taskpolicy.ReviewForcedSecurity:
-			risk = evidence.RiskHigh
-		case taskpolicy.ReviewForced:
-			if risk < evidence.RiskMedium {
-				risk = evidence.RiskMedium
-			}
-		case taskpolicy.ReviewNone:
-			return ""
-		}
+	risk := a.task.ledger.MutationRiskWithin(a.writeWorkspaceRoot)
+	// Contract review obligations may raise the review floor.
+	if a.requiresSecurityReview() {
+		risk = evidence.RiskHigh
+	} else if a.requiresIndependentReview() && risk < evidence.RiskMedium {
+		risk = evidence.RiskMedium
 	}
-	paths := productionPaths(a.evidence.PathsSince(mutation))
-	hasReviewTool := a.tools != nil && (toolPresent(a.tools, "review") || toolPresent(a.tools, "run_skill") || toolPresent(a.tools, "use_capability"))
-	hasSecurityTool := a.tools != nil && (toolPresent(a.tools, "security_review") || toolPresent(a.tools, "run_skill") || toolPresent(a.tools, "use_capability"))
+	paths := productionPaths(a.task.ledger.PathsSince(-1))
+	hasReviewTool := a.svc.tools != nil && (toolPresent(a.svc.tools, "review") || toolPresent(a.svc.tools, "run_skill") || toolPresent(a.svc.tools, "use_capability"))
+	hasSecurityTool := a.svc.tools != nil && (toolPresent(a.svc.tools, "security_review") || toolPresent(a.svc.tools, "run_skill") || toolPresent(a.svc.tools, "use_capability"))
 	switch risk {
 	case evidence.RiskLow:
 		// Existing light review (read/diff) already checked elsewhere.
@@ -249,7 +240,7 @@ func (a *Agent) deliveryReviewGateFailure() string {
 			// Test/minimal registries without review keep the light review gate.
 			return ""
 		}
-		ok, blocking, report := a.evidence.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
+		ok, blocking, report := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
 		if blocking {
 			if a.capabilityAudit != nil {
 				a.capabilityAudit.RecordReviewBlock(false)
@@ -257,20 +248,20 @@ func (a *Agent) deliveryReviewGateFailure() string {
 			return "structured review reported blocking findings; fix them and re-run review"
 		}
 		if !ok {
-			hostProof := a.evidence.HasSuccessfulDeliverySignoffAfter(mutation) &&
-				a.evidence.HasHostReviewCoverageAfter(mutation, paths)
+			hostProof := a.task.ledger.HasSuccessfulDeliverySignoffAfter(mutation) &&
+				a.task.ledger.HasHostReviewCoverageAfter(mutation, paths)
 			if !hostProof {
 				return "medium-risk changes require either a successful structured review or host-proven verification plus diff/file inspection after the latest mutation" + reviewCoverageHint(paths)
 			}
 		}
 		if report != nil {
-			a.pendingReviewWarnings = append(a.pendingReviewWarnings, report.WarningSummaries()...)
+			a.turn.reviewWarnings = append(a.turn.reviewWarnings, report.WarningSummaries()...)
 		}
 	case evidence.RiskHigh:
 		if !hasReviewTool && !hasSecurityTool {
 			return "high-risk changes require review and security_review tools after the latest mutation"
 		}
-		okR, blockR, repR := a.evidence.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
+		okR, blockR, repR := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
 		if blockR {
 			if a.capabilityAudit != nil {
 				a.capabilityAudit.RecordReviewBlock(false)
@@ -280,7 +271,7 @@ func (a *Agent) deliveryReviewGateFailure() string {
 		if !okR {
 			return "high-risk changes require review with review_report after the latest mutation" + reviewCoverageHint(paths)
 		}
-		okS, blockS, repS := a.evidence.HasStructuredReviewAfter(evidence.ReviewKindSecurity, mutation, paths)
+		okS, blockS, repS := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindSecurity, mutation, paths)
 		if blockS {
 			if a.capabilityAudit != nil {
 				a.capabilityAudit.RecordReviewBlock(true)
@@ -291,10 +282,10 @@ func (a *Agent) deliveryReviewGateFailure() string {
 			return "high-risk changes require security_review with review_report after the latest mutation" + reviewCoverageHint(paths)
 		}
 		if repR != nil {
-			a.pendingReviewWarnings = append(a.pendingReviewWarnings, repR.WarningSummaries()...)
+			a.turn.reviewWarnings = append(a.turn.reviewWarnings, repR.WarningSummaries()...)
 		}
 		if repS != nil {
-			a.pendingReviewWarnings = append(a.pendingReviewWarnings, repS.WarningSummaries()...)
+			a.turn.reviewWarnings = append(a.turn.reviewWarnings, repS.WarningSummaries()...)
 		}
 	}
 	return ""
@@ -339,7 +330,7 @@ func (a *Agent) ReviewWarnings() []string {
 	if a == nil {
 		return nil
 	}
-	return append([]string(nil), a.pendingReviewWarnings...)
+	return append([]string(nil), a.turn.reviewWarnings...)
 }
 
 // FormatReviewWarningsForSummary builds a short appendix for the final answer.

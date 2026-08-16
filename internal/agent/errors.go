@@ -6,6 +6,30 @@ import (
 	"strings"
 )
 
+// ReasoningReplayFailure classifies why an assistant turn could not safely be
+// committed to provider-visible history.
+type ReasoningReplayFailure string
+
+const (
+	ReasoningReplayMissing      ReasoningReplayFailure = "missing_reasoning"
+	ReasoningReplayOverflow     ReasoningReplayFailure = "reasoning_overflow"
+	ReasoningReplayUnreplayable ReasoningReplayFailure = "unreplayable_history"
+)
+
+// ReasoningReplayError stops client tools before execution when their provider
+// reasoning cannot be replayed. Completed work is retained as LocalOnly by the
+// ordinary interrupted-turn recovery path.
+type ReasoningReplayError struct {
+	Kind ReasoningReplayFailure
+}
+
+func (e *ReasoningReplayError) Error() string {
+	if e != nil && e.Kind == ReasoningReplayOverflow {
+		return "The provider reasoning exceeded the client safety limit, so Reasonix did not run the requested tools. Existing work was kept; retry to continue safely."
+	}
+	return "The provider omitted reasoning required to replay this tool turn, so Reasonix did not run the requested tools. Existing work was kept; retry to continue safely."
+}
+
 // PauseClass names the guard that deliberately ended a run, so a host can
 // classify an outcome without reaching into the unexported pause types.
 // Empty for ordinary provider/tool failures.
@@ -31,7 +55,7 @@ func PauseClass(err error) string {
 
 // RunPauseInfo is the stable host-facing description of a deliberate Run
 // boundary. It keeps unexported control-flow error types private while allowing
-// Controller to distinguish a host default from an explicit user max_steps.
+// Controller to distinguish task budgets from an explicit runtime max_steps.
 type RunPauseInfo struct {
 	Kind      string
 	Limit     int
@@ -44,7 +68,7 @@ type RunPauseInfo struct {
 func InspectRunPause(err error) (RunPauseInfo, bool) {
 	var maxSteps *maxStepsPause
 	if errors.As(err, &maxSteps) {
-		return RunPauseInfo{Kind: "max_steps", Limit: maxSteps.steps, Key: maxSteps.key, HostOwned: maxSteps.hostOwned}, true
+		return RunPauseInfo{Kind: "max_steps", Limit: maxSteps.steps, Key: maxSteps.key}, true
 	}
 	var budget *taskBudgetPause
 	if errors.As(err, &budget) {

@@ -108,6 +108,9 @@ func TestModelMessagesAndSanitizeDropLocalOnlyInterruptedOutput(t *testing.T) {
 		Content: "partial answer", ReasoningContent: "partial reasoning", LocalOnly: true,
 		ToolCalls:       []ToolCall{{ID: "partial", Name: "write_file"}},
 		InterruptedTurn: &InterruptedTurnRecovery{Pending: true, InterruptedTools: []string{"write_file"}},
+		FinalReadinessRecovery: &FinalReadinessRecovery{
+			Pending: true, Missing: []string{"verification"}, Checkpoint: json.RawMessage(`{"receipts":[]}`),
+		},
 	}
 	in := []Message{
 		{Role: RoleUser, Content: "task"},
@@ -123,7 +126,7 @@ func TestModelMessagesAndSanitizeDropLocalOnlyInterruptedOutput(t *testing.T) {
 		t.Fatalf("SanitizeToolPairing leaked local-only record: %+v", wire)
 	}
 	session := NormalizeSessionMessages(in)
-	if len(session) != len(in) || !session[1].LocalOnly || session[1].Content != local.Content {
+	if len(session) != len(in) || !session[1].LocalOnly || session[1].Content != local.Content || session[1].FinalReadinessRecovery == nil {
 		t.Fatalf("session normalization did not preserve local display: %+v", session)
 	}
 }
@@ -697,10 +700,33 @@ func TestMessageResponsesItemsRemainBackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestMessageServerSearchRemainBackwardCompatible(t *testing.T) {
+	legacy := Message{Role: RoleAssistant, Content: "answer"}
+	legacyJSON, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(legacyJSON), "server_search") {
+		t.Fatalf("legacy message gained server_search: %s", legacyJSON)
+	}
+	current := Message{Role: RoleAssistant, Content: "answer", ServerSearch: []ServerSearchCall{{ID: "s1", Query: "q"}}}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip Message
+	if err := json.Unmarshal(raw, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if len(roundTrip.ServerSearch) != 1 || roundTrip.ServerSearch[0].ID != "s1" || roundTrip.ServerSearch[0].Query != "q" {
+		t.Fatalf("round-tripped ServerSearch = %#v", roundTrip.ServerSearch)
+	}
+}
+
 // ChunkType constants
 
 func TestChunkTypeConstants(t *testing.T) {
-	types := []ChunkType{ChunkText, ChunkReasoning, ChunkToolCallStart, ChunkToolCallArgsDelta, ChunkToolCall, ChunkUsage, ChunkDone, ChunkError, ChunkResponsesItem}
+	types := []ChunkType{ChunkText, ChunkReasoning, ChunkToolCallStart, ChunkToolCallArgsDelta, ChunkToolCall, ChunkUsage, ChunkDone, ChunkError, ChunkResponsesItem, ChunkServerSearch}
 	for i, ct := range types {
 		if int(ct) != i {
 			t.Errorf("ChunkType %d: got %d", i, int(ct))

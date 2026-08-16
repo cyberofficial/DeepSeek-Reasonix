@@ -147,10 +147,10 @@ func TestTodoProgressGuardRenewsOnUniqueHostWork(t *testing.T) {
 }
 
 func TestCanonicalTodoProgressIgnoresTitleAndPendingListChurn(t *testing.T) {
-	a := &Agent{todoState: []evidence.TodoItem{
+	a := &Agent{sess: sessionRuntime{todoState: []evidence.TodoItem{
 		{Content: "finish the task", Status: "in_progress"},
 		{Content: "write tests", Status: "pending"},
-	}}
+	}}}
 	before, tracking := a.canonicalTodoProgress()
 	if !tracking {
 		t.Fatal("incomplete todo list should be tracked")
@@ -177,7 +177,7 @@ func TestMaxStepsGraceSummaryBypassesIncompleteTodoReadiness(t *testing.T) {
 		}},
 		testutil.Turn{Text: "Progress saved; the todo remains unfinished."},
 	)
-	a := New(mp, reg, NewSession(""), Options{MaxSteps: 1, DeliveryProfile: true}, event.Discard)
+	a := New(mp, reg, NewSession(""), Options{MaxSteps: 1}, event.Discard)
 
 	err := a.Run(context.Background(), "start a long task")
 	var pause *maxStepsPause

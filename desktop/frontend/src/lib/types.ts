@@ -1,9 +1,11 @@
 // Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
 // One event channel carries every kind; `kind` discriminates the payload.
+import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
-import type { ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
-export type { ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
-export type { ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
+import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
+import type { WireApproval } from "./approvalTypes";
+export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
+export type { ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionReference } from "./sessionCatalogTypes";
 export type EventKind =
   | "turn_started"
   | "reasoning"
@@ -11,6 +13,7 @@ export type EventKind =
   | "message"
   | "tool_dispatch"
   | "tool_result"
+  | "tool_result_preview"
   | "tool_progress"
   | "usage"
   | "notice"
@@ -185,15 +188,7 @@ export interface WireRecoveryApproval {
   task_grant_scope?: string;
 }
 
-export interface WireApproval {
-  id: string;
-  tool: string;
-  subject: string;
-  reason?: string;
-  fresh?: boolean;
-  kind?: "tool" | "plan" | "recovery" | string;
-  recovery?: WireRecoveryApproval;
-}
+export type { WireApproval, WireWriteAccessApproval } from "./approvalTypes";
 
 export interface WireGuardian {
   id: string;
@@ -498,6 +493,7 @@ export interface ProjectNode {
   root?: string;
   topicId?: string;
   sessionPath?: string;
+  preview?: string;
   projectColor?: string;
   turns?: number;
   turnsState?: "unknown" | "valid" | "corrupt" | string;
@@ -512,8 +508,59 @@ export interface ProjectNode {
   recoveryReason?: string;
   recoveryDigest?: string;
   recoveryParentId?: string;
+  recoveryState?: "normal" | "repairing" | "adopted" | "preferred" | "diverged" | "recovery_only" | string;
+  recoveryBranchCount?: number;
+  recoveryUnresolvedCount?: number;
+  recoveryCleanupEligibleCount?: number;
   isolatedWorktree?: boolean;
   children?: ProjectNode[];
+}
+
+export interface RecoveryLineageMember {
+  path: string;
+  role: "normal" | "covered_copy" | "adopted" | "preferred" | "diverged" | string;
+  canonical: boolean;
+  turns: number;
+  open: boolean;
+  running: boolean;
+}
+
+export interface RecoveryLineageView {
+  groupId: string;
+  state: string;
+  branchCount: number;
+  unresolved: number;
+  cleanupEligible: number;
+  members: RecoveryLineageMember[];
+}
+
+export interface RecoveryCleanupRequest {
+  scope: string;
+  workspaceRoot?: string;
+  topicId: string;
+  apply: boolean;
+}
+
+export interface RecoveryPreferenceRequest {
+  scope: string;
+  workspaceRoot?: string;
+  topicId: string;
+  path: string;
+}
+
+export interface RecoveryCleanupItem {
+  path: string;
+  status: "eligible" | "moved" | "busy" | "kept" | string;
+  error?: string;
+}
+
+export interface RecoveryCleanupResult {
+  eligible: number;
+  moved: number;
+  busy: number;
+  kept: number;
+  dryRun: boolean;
+  items: RecoveryCleanupItem[];
 }
 
 export interface DeliveryWorktreeAvailability {
@@ -533,7 +580,7 @@ export interface DeliveryWorktreeOpenResult {
   tab: TabMeta;
 }
 
-export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "error";
+export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "awaiting_delivery" | "error" | "diverged_recovery";
 
 export interface TopicMeta {
   id: string;
@@ -586,6 +633,7 @@ export interface ContextPanelInfo {
   mock?: boolean;
   readFiles: ReadFileRecord[];
   changedFiles: ChangedFileInfo[];
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface UsageSourceStats {
@@ -646,6 +694,8 @@ export interface HistoryMessage {
   summary?: string;
   archive?: string;
   decisionReceipt?: WireDecisionReceipt;
+  readiness?: WireFinalReadiness;
+  serverSearch?: HistoryServerSearch[];
 }
 
 export interface HistoryToolCall {
@@ -800,25 +850,7 @@ export interface CheckpointMeta {
   disabledReason?: string;
 }
 
-export interface RewindPlanView {
-  planId?: string;
-  turn?: number;
-  scope?: string;
-  coverage?: string;
-  coverageGaps?: string[];
-  legacy?: boolean;
-  expiredFilePayload?: boolean;
-  canFiles?: boolean;
-  canConversation?: boolean;
-  disabledReason?: string;
-  conflicts?: string[];
-  files?: string[];
-  fileCount?: number;
-  activeWriters?: number;
-  path?: string;
-  ok?: boolean;
-  error?: string;
-}
+export type { RewindPlanView } from "./rewindTypes";
 
 export interface RewindResultView {
   ok?: boolean;
@@ -827,39 +859,18 @@ export interface RewindResultView {
   written?: string[];
   deleted?: string[];
   conversationOk?: boolean;
+  conversationForked?: boolean;
+  operationId?: string;
+  branch?: string;
+  partial?: boolean;
+  tabId?: string;
+  tab?: TabMeta;
   error?: string;
   conflicts?: string[];
   coverage?: string;
 }
 
-// SessionMeta is one saved session for the history panel.
-export interface SessionMeta {
-  path: string;
-  preview: string;
-  title?: string; // user-chosen name; falls back to preview when empty
-  turns: number;
-  turnsState?: "unknown" | "valid" | "corrupt" | string;
-  createdAt: number; // unix milliseconds
-  lastActivityAt: number; // unix milliseconds
-  modTime: number; // compatibility alias for lastActivityAt
-  deletedAt?: number; // unix milliseconds, present for trashed sessions
-  current: boolean;
-  open: boolean;
-  scope?: string;       // "project" | "global"; empty for legacy → treated as "global"
-  workspaceRoot?: string;
-  topicId?: string;
-  topicTitle?: string;
-  kind?: "session" | "channel" | string;
-  channel?: string;
-  channelLabel?: string;
-  remoteId?: string;
-  chatType?: string;
-  userId?: string;
-  threadId?: string;
-  sessionSource?: string;
-  recovered?: boolean; // created by conflict recovery, including a continued branch
-  recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
-}
+export type { SessionMeta } from "./sessionMetaTypes";
 
 export type { HistoryIndexStatus, HistorySearchContextLine, HistorySearchContextRequest, HistorySearchHit, HistorySearchPage, HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest } from "./historyCatalogTypes";
 
@@ -883,6 +894,7 @@ export interface ContextInfo {
   sessionCostQuote?: CostQuote;
   sources?: Record<string, UsageSourceStats>;
   maintenance?: ContextMaintenanceInfo;
+  contextBudget?: ContextBudgetInfo;
 }
 
 export interface Meta {
@@ -911,7 +923,7 @@ export interface Meta {
   goal?: string;
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
-  canonicalTodos?: Todo[];
+  canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";

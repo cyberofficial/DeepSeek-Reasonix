@@ -11,12 +11,14 @@ import (
 )
 
 // compactionProgress is how compaction is faring in this session: whether a
-// fold stopped reducing, how many ran back to back, and the turn the last one
-// committed under. All three are cleared together whenever the lineage resets,
-// which is why they travel as one value rather than three fields.
+// fold stopped reducing, how many ran back to back, and which retries already
+// ran in the active turn. The fields are cleared together on lineage resets.
 type compactionProgress struct {
 	stuck       bool // a fold landed above the trigger, so pressure retries are pointless
 	consecutive int  // back-to-back folds since one last helped
+	// failedTurn backs off changed-view retries within one active tool loop.
+	// A later user turn may retry, while hard-ceiling recovery bypasses it.
+	failedTurn atomic.Int64
 	// lastTurn stops the post-turn observer and the pre-send preflight from
 	// paying for two summaries during one active tool loop.
 	lastTurn atomic.Int64
@@ -74,7 +76,7 @@ func (m ContextManager) Prepare(ctx context.Context, policy ContextPreparePolicy
 
 func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePolicy) (PreparedContext, error) {
 	a := m.agent
-	if a == nil || a.session == nil {
+	if a == nil || a.sess.conversation == nil {
 		return PreparedContext{}, nil
 	}
 	visible := a.modelVisibleMessages()
@@ -98,17 +100,19 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 		prepared.InputTokens = est
 	}
 	inputHash := a.contextMaintenanceInputHash(visible)
-	if blocked, reason := a.contextMaintenanceBlocked(inputHash); blocked && policy.Trigger != CompactionTriggerManual {
-		if policy.Trigger == CompactionTriggerOverflow || est >= hard {
-			return PreparedContext{}, fmt.Errorf("%w: %s", ErrCompactionRequired, reason)
-		}
+	// Receipts back off sub-critical retries only: at a physical recovery point
+	// (overflow, or a view at/above the hard ceiling) the fold must still run —
+	// degradeFoldSummary guarantees mustFree progress.
+	if blocked, _ := a.contextMaintenanceBlocked(inputHash); blocked && policy.Trigger != CompactionTriggerManual &&
+		policy.Trigger != CompactionTriggerOverflow && est < hard {
 		return prepared, nil
 	}
 	if est < fold {
-		a.compaction.consecutive = 0
-		a.compaction.stuck = false
+		a.sess.compaction.consecutive = 0
+		a.sess.compaction.stuck = false
+		a.sess.compaction.failedTurn.Store(0)
 	}
-	if a.compaction.stuck && policy.Trigger == CompactionTriggerPressure {
+	if a.sess.compaction.stuck && policy.Trigger == CompactionTriggerPressure && est < hard {
 		return prepared, nil
 	}
 	// One user trigger. Overflow is a one-shot physical recovery path only.
@@ -152,7 +156,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 		return prepared, nil
 	}
 	if outcome == CompactionNoop {
-		canonical, _ := a.session.snapshotMessagesVersion()
+		canonical, _ := a.sess.conversation.snapshotMessagesVersion()
 		if policy.Trigger == CompactionTriggerPressure && a.activeTurnStart(canonical) >= 0 {
 			return prepared, nil
 		}
@@ -165,14 +169,21 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	}
 
 	result := m.currentPrepared()
+	if result.InputTokens < fold {
+		// A fold that landed under the trigger proves compaction reduces again;
+		// a stale stuck latch must not suppress the next pressure round.
+		a.sess.compaction.stuck = false
+		a.sess.compaction.consecutive = 0
+		a.sess.compaction.failedTurn.Store(0)
+	}
 	if policy.Trigger == CompactionTriggerManual {
 		return result, nil
 	}
 	if result.InputTokens >= fold {
 		reason := fmt.Sprintf("summary result remains above fold trigger (%d >= %d)", result.InputTokens, fold)
 		a.recordContextMaintenanceBlocked(a.contextMaintenanceInputHash(result.Messages), policy.Trigger, "summary", reason)
-		a.compaction.stuck = true
-		a.compaction.consecutive++
+		a.sess.compaction.stuck = true
+		a.sess.compaction.consecutive++
 		if policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard {
 			return PreparedContext{}, fmt.Errorf("%w: %s", ErrCompactionRequired, reason)
 		}
@@ -205,8 +216,8 @@ func (a *Agent) estimatedVisibleRequestTokens(visible []provider.Message) int {
 		msgs[i].CreatedAt = 0
 	}
 	var tools []provider.ToolSchema
-	if a.tools != nil {
-		tools = a.tools.Schemas()
+	if a.svc.tools != nil {
+		tools = a.svc.tools.Schemas()
 	}
 	return a.estimatedRequestTokens(provider.Request{
 		Messages:    msgs,

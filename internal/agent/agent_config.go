@@ -13,6 +13,13 @@ type agentConfig struct {
 	temperature        float64
 	usageSource        string
 	modelRef           string
+	// workspaceID is a prompt-cache lineage component, so it must not move
+	// while an agent lives — a change would silently rekey the cache.
+	workspaceID string
+	// classifierTaskText is the host-trusted task text for delivery intent
+	// classification, set by sub-agent spawners whose Run input carries host
+	// framing. Empty means classify the raw input verbatim.
+	classifierTaskText string
 	// writeWorkspaceRoot scopes write reservations when writeScheduler is set.
 	writeWorkspaceRoot string
 	// subagentDepth caps delegation; at maxSubagentDepth the recursive

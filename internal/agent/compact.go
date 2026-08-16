@@ -89,7 +89,8 @@ Rules: be terse — bullet points and fragments, not prose. Preserve identifiers
 // at send time and must never make compaction happen earlier than the user's
 // configured compact_ratio.
 func (a *Agent) compactTrigger() int {
-	if a == nil || a.contextWindow <= 0 {
+	window := a.effectiveContextWindow()
+	if a == nil || window <= 0 {
 		return 0
 	}
 	ratio := a.compactRatio
@@ -99,16 +100,17 @@ func (a *Agent) compactTrigger() int {
 	if a.ablation.Off(ablation.Compaction) {
 		ratio = 0.5
 	}
-	return max(1, int(float64(a.contextWindow)*ratio))
+	return max(1, int(float64(window)*ratio))
 }
 
 // hardInputCeiling is a physical input-safety boundary, not another user
 // compaction threshold. Reply budgets are resolved independently at send time.
 func (a *Agent) hardInputCeiling() int {
-	if a == nil || a.contextWindow <= 0 {
+	window := a.effectiveContextWindow()
+	if a == nil || window <= 0 {
 		return 0
 	}
-	return max(1, a.contextWindow-protocolReserveTokens)
+	return max(1, window-protocolReserveTokens)
 }
 
 // recentTailBudget is the content-construction budget for the recent verbatim
@@ -116,11 +118,12 @@ func (a *Agent) hardInputCeiling() int {
 // windows (tests / constrained providers) drop the 32K floor so the tail cannot
 // alone exceed the window.
 func (a *Agent) recentTailBudget() int {
-	if a == nil || a.contextWindow <= 0 {
+	window := a.effectiveContextWindow()
+	if a == nil || window <= 0 {
 		return minRecentTailTokens
 	}
-	n := int(float64(a.contextWindow) * recentTailBudgetRatio)
-	if a.contextWindow >= minRecentTailTokens*2 {
+	n := int(float64(window) * recentTailBudgetRatio)
+	if window >= minRecentTailTokens*2 {
 		if n < minRecentTailTokens {
 			n = minRecentTailTokens
 		}
@@ -128,7 +131,7 @@ func (a *Agent) recentTailBudget() int {
 	if n > maxRecentTailTokens {
 		n = maxRecentTailTokens
 	}
-	if max := a.contextWindow / 2; max > 0 && n > max {
+	if max := window / 2; max > 0 && n > max {
 		n = max
 	}
 	return max(1, n)
@@ -137,19 +140,21 @@ func (a *Agent) recentTailBudget() int {
 // checkpointCeiling is the normal auto-checkpoint acceptance upper bound
 // (50% of the window). Candidates below this are accepted without padding.
 func (a *Agent) checkpointCeiling() int {
-	if a == nil || a.contextWindow <= 0 {
+	window := a.effectiveContextWindow()
+	if a == nil || window <= 0 {
 		return 0
 	}
-	return max(1, int(float64(a.contextWindow)*checkpointCeilingRatio))
+	return max(1, int(float64(window)*checkpointCeilingRatio))
 }
 
 // exceptionalMinimumSavings is required only when the fixed prefix alone already
 // exceeds the 50% ceiling; otherwise ordinary candidates simply stay under 50%.
 func (a *Agent) exceptionalMinimumSavings() int {
-	if a == nil || a.contextWindow <= 0 {
+	window := a.effectiveContextWindow()
+	if a == nil || window <= 0 {
 		return 0
 	}
-	return max(1, int(float64(a.contextWindow)*exceptionalMinSavingsRatio))
+	return max(1, int(float64(window)*exceptionalMinSavingsRatio))
 }
 
 // foldEconomics estimates whether compacting the given region saves enough
@@ -180,6 +185,11 @@ func estimateMessagesTokens(msgs []provider.Message) int {
 		}
 		for _, item := range m.ResponsesItems {
 			total += estimateTextTokens(string(item))
+		}
+		for _, search := range m.ServerSearch {
+			provider.WalkServerSearchEstimate(search, func(s string) {
+				total += estimateTextTokens(s)
+			})
 		}
 	}
 	return total
@@ -505,7 +515,7 @@ func tailStart(msgs []provider.Message, head, budgetTokens int, tokPerChar float
 // actually sent (the provider strips it). Falls back to ~4 chars/token before
 // any usage is known, and ignores absurd ratios.
 func (a *Agent) tokPerChar() float64 {
-	if cal := a.promptCalibration.Load(); cal != nil && cal.compactChars > 0 {
+	if cal := a.sess.output.promptCalibration.Load(); cal != nil && cal.compactChars > 0 {
 		if r := float64(cal.promptTokens) / float64(cal.compactChars); r > 0.05 && r < 2 {
 			return r
 		}
@@ -549,7 +559,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 	defer func() {
 		usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 		if usage != nil && (usage.TotalTokens > 0 || usage.RequestCount > 0) {
-			a.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.pricing, UsageSource: event.UsageSourceCompaction})
+			a.svc.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.svc.pricing, UsageSource: event.UsageSourceCompaction})
 		}
 	}()
 	defer trackPublishedHostStream(ctx, cancel)()
@@ -565,10 +575,8 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 		MaxTokens:   maxOut,
 		Temperature: provider.OptionalTemperature(a.temperature),
 	}
-	if budget, clipped, budgetErr := a.effectiveOutputBudget(req); budgetErr != nil {
-		return "", usage, budgetErr
-	} else if clipped {
-		req.MaxTokens = budget
+	if err := a.applyAdmissionToRequest(&req); err != nil {
+		return "", usage, err
 	}
 	if req.MaxTokens > summaryOutputMaxTokens {
 		req.MaxTokens = summaryOutputMaxTokens
@@ -576,10 +584,10 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 	if req.MaxTokens < 256 {
 		return "", usage, fmt.Errorf("summary output budget too small (%d tokens)", req.MaxTokens)
 	}
-	if a.prov == nil {
+	if a.svc.prov == nil {
 		return "", usage, fmt.Errorf("summary unavailable")
 	}
-	ch, err := a.prov.Stream(ctx, req)
+	ch, err := a.svc.prov.Stream(ctx, req)
 	if err != nil {
 		return "", usage, err
 	}
