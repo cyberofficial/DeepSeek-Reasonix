@@ -288,6 +288,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	if !turn.synthetic {
 		c.beginRecoveryEpisode()
 	}
+
+	// SplitReason mode: delegate to master-slave loop
+	if c.SplitReasonMode() {
+		return c.runSplitReasonLoop(ctx, modelInput, turn.raw)
+	}
+
 	err = c.runner.Run(ctx, modelInput)
 	c.captureGoalRunWorkDuration(startMessages)
 	c.persistGoalDeliveryCheckpoint()

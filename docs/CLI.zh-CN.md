@@ -349,7 +349,7 @@ reasonix -p "同时更新两个项目" \
 | `Enter` | 选择当前高亮项。 |
 | `Esc` | 取消当前选择器或审批。 |
 | `y` / `a` / `p` / `n`、数字键 | 执行对应的审批动作。 |
-| `Shift+Tab` | 按 `Ask → Auto → Plan → Ask` 循环。 |
+| `Shift+Tab` | 按 `Ask → Auto → Plan → SplitReason → Ask` 循环。 |
 | `Ctrl+Y` | 独立切换 YOLO，不进入安全模式循环。 |
 
 响应式底栏左侧显示当前交互状态；空间足够时，右侧显示模型和推理强度。第二行按

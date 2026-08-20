@@ -66,6 +66,8 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # planner_model = "deepseek-pro"      # optional low-frequency planner
 # subagent_model = "deepseek-pro"     # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
+# master_model = "deepseek/deepseek-v4-pro"   # strong model for SplitReason planning
+# splitreason_slave_effort = "low"      # reasoning effort for slave: low|medium|high|max
 # max_subagent_depth = 2              # nested delegation depth; set 1 for the old single-layer boundary
 # max_subagent_concurrency = 6        # session-wide sub-agent concurrency (task/fleet/skills)
 # max_parallel_writers = 3            # concurrent writers with non-overlapping write_paths
@@ -541,7 +543,7 @@ loading model are documented in [the Chinese desktop hooks guide](./DESKTOP_HOOK
 
 Shortcuts are documented by client because users usually look for the keys that
 work in the surface they are using. Desktop keeps its Plan toggle, while the CLI
-cycles Ask, Auto, and Plan with `Shift+Tab`. Desktop uses `Cmd+Y` on macOS or
+cycles Ask, Auto, Plan, and SplitReason with `Shift+Tab`. Desktop uses `Cmd+Y` on macOS or
 `Ctrl+Y` elsewhere for YOLO by default. If YOLO is rebound on Windows/Linux,
 `Ctrl+Y` becomes the standard composer redo fallback. Desktop paste stays on the
 platform paste key; in the CLI, terminal-native text paste and
@@ -657,7 +659,7 @@ Mode and display shortcuts:
 
 | Key or command | What it does | Notes |
 | --- | --- | --- |
-| `Shift+Tab` | Cycles Ask → Auto → Plan → Ask | YOLO remains outside this composer-mode cycle; the footer shows the active mode. |
+| `Shift+Tab` | Cycles Ask → Auto → Plan → SplitReason → Ask | YOLO remains outside this composer-mode cycle; the footer shows the active mode. |
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
@@ -693,6 +695,7 @@ Mode meanings:
 | Auto | Auto-allows fallback approvals, including interactive `remember`/`forget`; explicit `ask` / `deny` rules still apply. |
 | YOLO | Skips ordinary tool approval prompts, including `remember`/`forget`; `deny`, user `ask` questions, and plan approval prompts still wait. |
 | Plan | Directs the model to plan first — a plan-first workflow, not an all-tools read-only mode. Built-in writers still follow the active Ask/Auto/YOLO rules and Sandbox; installed MCP writers, destructive targets, and readers from unauthorized servers are hard-blocked for the whole planning phase (approval cannot release them; they return once Plan exits), and explicit phase-only tools such as `complete_step` wait until approval. |
+| SplitReason | Master-slave execution loop. The strong model (master) produces structured handoffs with precise instructions; the weak model (slave) executes them and reports results. The master reviews outcomes against success criteria and continues until complete. Configure master/slave models via `agent.splitreason_master_model` and `agent.splitreason_slave_model`. |
 | Goal | Pursues a saved objective until complete, blocked, or cleared. |
 
 ## Permissions & sandbox

@@ -276,9 +276,9 @@ func TestStatusFooterUsesReadableLocalizedHintAndWrapsCleanly(t *testing.T) {
 	for _, tt := range []struct {
 		lang, compact, session string
 	}{
-		{lang: "en", compact: "Shift+Tab ask/auto/plan · Ctrl+Y YOLO", session: "MODEL deepseek-v4-flash   EFFORT auto"},
-		{lang: "zh", compact: "Shift+Tab 询问/自动/计划 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   强度 auto"},
-		{lang: "zh-TW", compact: "Shift+Tab 詢問/自動/計畫 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   強度 auto"},
+		{lang: "en", compact: "Shift+Tab ask/auto/plan/splitreason · Ctrl+Y YOLO", session: "MODEL deepseek-v4-flash   EFFORT auto"},
+		{lang: "zh", compact: "Shift+Tab 询问/自动/计划/分推理 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   强度 auto"},
+		{lang: "zh-TW", compact: "Shift+Tab 詢問/自動/計畫/分推理 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   強度 auto"},
 	} {
 		t.Run(tt.lang, func(t *testing.T) {
 			i18n.DetectLanguage(tt.lang)

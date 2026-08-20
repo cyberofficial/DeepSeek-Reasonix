@@ -86,3 +86,13 @@ func (s *skillSet) writer() *skill.Store {
 	}
 	return s.store
 }
+
+// EnabledStore returns the store for enabled skills (for Skills list)
+func (s *skillSet) EnabledStore() *skill.Store {
+	return s.store
+}
+
+// AllStore returns the store for all skills including disabled (for AllSkills list)
+func (s *skillSet) AllStore() *skill.Store {
+	return s.allStore
+}

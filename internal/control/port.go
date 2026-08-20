@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/scheduler"
 	"reasonix/internal/skill"
 )
@@ -99,7 +100,7 @@ type Approvals interface {
 	SetMode(plan, autoApproveTools bool)
 }
 
-// Goals covers the active-goal FSM and plan mode.
+// Goals covers the active-goal FSM, plan mode, and splitreason mode.
 type Goals interface {
 	Goal() string
 	GoalStatus() string
@@ -115,6 +116,10 @@ type Goals interface {
 	ResetPlannerSession()
 	PlanMode() bool
 	SetPlanMode(v bool)
+	// SplitReasonMode reports whether the master-slave splitreason loop is active.
+	SplitReasonMode() bool
+	// SetSplitReasonMode enables or disables the splitreason master-slave loop.
+	SetSplitReasonMode(v bool)
 	// AgentPreset is the session role setting (light|balanced|delivery).
 	AgentPreset() string
 	// SetAgentPreset updates the role setting for subsequent turns without

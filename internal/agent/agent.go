@@ -15,6 +15,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"reasonix/internal/ablation"
+	"reasonix/internal/agentpreset"
 	"reasonix/internal/capability"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/diff"
@@ -314,6 +315,18 @@ type Agent struct {
 	// barrier by advertising schema-level ReadOnly()==true. The pointed-to
 	// cause is immutable and contains no arguments, paths, or remote addresses.
 	mutationDependencyBarrier atomic.Pointer[mutationBarrierCause]
+
+	// The following fields are populated during Agent construction and mirror
+	// values from Options or sub-structs for direct Agent access.
+	memQueue                  memory.Queue
+	workspaceLease            *workspacelease.Owner
+	missingReasoningWarnState *missingReasoningWarnState
+	evidence                  *evidence.Ledger
+	deliveryProfile           bool
+	sessionPath               string
+	workspaceID               string
+	cacheState                string
+	classifierTaskText        string
 
 	// plannerMCPExecution relaxes the strict read-only MCP boundary for the
 	// two-model Planner only: authorized, non-destructive MCP targets may run
@@ -994,7 +1007,7 @@ func (a *Agent) RecordUnappliedSteer(text string, itemID ...string) {
 	if hook != nil {
 		hook(text)
 	}
-	a.sink.Emit(event.Event{
+	a.svc.sink.Emit(event.Event{
 		Kind:   event.Notice,
 		Level:  event.LevelWarn,
 		Code:   event.NoticeCodeUnappliedSteer,
@@ -1070,6 +1083,14 @@ type Options struct {
 	// CommandTaskApprover confirms scheduled OS-command tasks before they are
 	// registered (cron_create_action). nil keeps fail-closed behavior.
 	CommandTaskApprover tool.CommandTaskApprover
+
+	// DeliveryProfile is a deprecated compatibility field. It is retained for
+	// session round-trips and config/session data; execution behavior is now
+	// governed by runtime policy. It does not affect tool schemas or prompts.
+	DeliveryProfile bool
+	// AgentPreset is a deprecated compatibility field corresponding to the
+	// legacy Light|Balanced|Delivery labels. It is retained for config round-trips.
+	AgentPreset string
 
 	// Context management. ContextWindow <= 0 disables compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.

@@ -1277,8 +1277,12 @@ type AgentConfig struct {
 	SubagentModel       string            `toml:"subagent_model"`
 	SubagentModels      map[string]string `toml:"subagent_models"`
 	SubagentEffort      string            `toml:"subagent_effort"`
-	SubagentEfforts     map[string]string `toml:"subagent_efforts"`
-	MaxSubagentDepth    int               `toml:"max_subagent_depth"`
+	SubagentEfforts       map[string]string `toml:"subagent_efforts"`
+	MaxSubagentDepth      int               `toml:"max_subagent_depth"`
+	// Master model for splitreason mode (strong model for planning)
+	MasterModel string `toml:"master_model"`
+	// SplitReasonSlaveEffort is the reasoning effort for the slave model in splitreason mode.
+	SplitReasonSlaveEffort string `toml:"splitreason_slave_effort"`
 	// TaskCostBudget lands a task on one summary once it spends this much.
 	TaskCostBudget float64 `toml:"task_cost_budget"`
 	// TaskTimeBudgetMinutes is the same gate on wall clock. Both ship off.
@@ -2090,6 +2094,40 @@ func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback b
 	return c.resolveNewSessionChatModel(func(name string) bool {
 		return c.Desktop.ProviderAccess == nil || access[strings.TrimSpace(name)]
 	}, false)
+}
+
+// ResolveSplitReasonModels resolves the master and slave models for the
+// ResolveSplitReasonModels resolves the master and slave models for the
+// splitreason master-slave loop. Master uses master_model; slave is default_model.
+func (c *Config) ResolveSplitReasonModels() (master, slave string, ok bool) {
+	if c == nil {
+		return "", "", false
+	}
+	masterRef := strings.TrimSpace(c.Agent.MasterModel)
+	slaveRef := strings.TrimSpace(c.DefaultModel)
+
+	if masterRef == "" || slaveRef == "" {
+		return "", "", false
+	}
+	masterResolved := ""
+	slaveResolved := ""
+
+	if entry, found := c.ResolveModel(masterRef); found && entry.Configured() {
+		masterResolved = entry.Name + "/" + entry.Model
+	} else if found {
+		masterResolved = masterRef
+	}
+
+	if entry, found := c.ResolveModel(slaveRef); found && entry.Configured() {
+		slaveResolved = entry.Name + "/" + entry.Model
+	} else if found {
+		slaveResolved = slaveRef
+	}
+
+	if masterResolved == "" || slaveResolved == "" {
+		return "", "", false
+	}
+	return masterResolved, slaveResolved, true
 }
 
 // APIKey resolves the entry's API key from its api_key_env.

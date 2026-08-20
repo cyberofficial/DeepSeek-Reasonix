@@ -90,6 +90,7 @@ type Messages struct {
 	ChatStatusYoloIdle                     string // shortcuts hint when idle in YOLO/bypass mode
 	ChatStatusCycleHint                    string // plan-toggle shortcut hint shown when no modal prompt owns the status row
 	ChatStatusCycleHintCompact             string // readable shortcut hint used by the persistent footer
+	ChatStatusSplitReasonHint              string // hint shown in status when splitreason mode is active
 	ChatTurnReceiptLabel                   string // compact per-turn usage receipt attached to the completed assistant response
 	ChatStatusModelLabel                   string
 	ChatStatusEffortLabel                  string
@@ -156,6 +157,10 @@ type Messages struct {
 	ConfigWriteReason                      string // reason shown for managed config write approval
 	ConfigWriteDeclined                    string // model-facing denial when the user declines a managed config write
 	ConfigWriteApprovalChoices             string // approval choice list for managed config write prompts
+	WriteAccessApprovalChoices             string // approval choice list for write access prompts
+	WriteAccessHomeWarning                 string // warning when user directories are included in write access
+	WriteAccessMergedPermissionHint        string // hint when ordinary permission rules also apply
+	WriteAccessProjectHint                 string // hint when access will be persisted to project config
 	CommandTaskSubjectPrefix               string // subject prefix before the command for scheduled OS-command task approval
 	CommandTaskReason                      string // reason shown for scheduled OS-command task approval
 	CommandTaskDeclined                    string // model-facing denial when the user declines a scheduled OS-command task

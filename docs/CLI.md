@@ -400,7 +400,7 @@ single-key shortcuts.
 | `Enter` | Select the highlighted row. |
 | `Esc` | Cancel the current picker or approval. |
 | `y` / `a` / `p` / `n`, number keys | Use the matching approval action. |
-| `Shift+Tab` | Cycle `Ask → Auto → Plan → Ask`. |
+| `Shift+Tab` | Cycle `Ask → Auto → Plan → SplitReason → Ask`. |
 | `Ctrl+Y` | Toggle YOLO independently of the composer-mode cycle. |
 
 The responsive footer keeps interaction state on the left and, when space

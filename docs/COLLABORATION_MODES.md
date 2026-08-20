@@ -1,9 +1,10 @@
 # Collaboration modes and fact-driven execution
 
-The desktop composer menu has two independent collaboration axes:
+The desktop composer menu has three independent collaboration axes:
 
 - **Plan mode**: draft a plan, then implement after approval.
 - **Goal mode**: pursue one objective until it is complete, blocked, or stopped.
+- **SplitReason mode**: master-slave execution loop. The strong model (master) produces structured handoffs with precise instructions; the weak model (slave) executes them and reports results. The master reviews outcomes against success criteria and continues until complete.
 
 There is no automatic simple / light / full task mode. Ordinary requests always
 enter the executor. The dedicated planner runs only for an explicit Plan, an

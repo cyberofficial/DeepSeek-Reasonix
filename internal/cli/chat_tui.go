@@ -102,6 +102,10 @@ type chatTUI struct {
 	// turnTokens accumulates this turn's output tokens (summed from per-step Usage
 	// events) for the live "↓N" readout in the running status line.
 	turnTokens int
+	// splitReasonMasterTokens accumulates master model tokens in splitreason mode.
+	splitReasonMasterTokens int
+	// splitReasonSlaveTokens accumulates slave model tokens in splitreason mode.
+	splitReasonSlaveTokens int
 	// showTurnUsage controls whether completed per-request token/cost receipts are
 	// retained in transcript scrollback. Usage accounting remains active either way.
 	showTurnUsage bool
@@ -121,6 +125,7 @@ type chatTUI struct {
 	// marker rides in outgoing user messages so the cache-stable prompt prefix is
 	// left untouched.
 	planMode bool
+	splitReasonMode bool
 	// legacyScrollClear keeps the per-offset ClearScreen workaround only for Warp.
 	legacyScrollClear bool
 	// sessionSwitch suppresses that workaround during a transcript rebuild (#5441).
@@ -440,10 +445,19 @@ const (
 )
 
 type controllerBuildSpec struct {
-	ModelRef         string
-	ToolApprovalMode string
-	PlanMode         bool
-	EffortOverride   *string
+	ModelRef           string
+	ToolApprovalMode   string
+	PlanMode           bool
+	SplitReasonMode    bool
+	EffortOverride     *string
+	SplitReasonConfig  *SplitReasonConfig
+}
+
+// SplitReasonConfig holds the model configuration for the splitreason master-slave loop.
+type SplitReasonConfig struct {
+	MasterModel string
+	SlaveModel  string
+	SlaveEffort string
 }
 
 func (m *chatTUI) runtimeSwitchBusy() bool {
@@ -4125,17 +4139,23 @@ func modeToggleKey(s string) bool {
 	}
 }
 
-// cycleMode handles the Shift+Tab gesture using the same three safe modes users
-// see in Claude Code: Ask → Auto → Plan → Ask. YOLO stays outside this cycle and
+// cycleMode handles the Shift+Tab gesture using the four safe modes:
+// Ask → Auto → Plan → SplitReason → Ask. YOLO stays outside this cycle and
 // remains an explicit Ctrl+Y choice.
 func (m *chatTUI) cycleMode() {
 	if m.ctrl == nil || m.ctrl.ToolApprovalMode() == control.ToolApprovalYolo {
 		return
 	}
 	switch {
+	case m.splitReasonMode:
+		m.splitReasonMode = false
+		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
+		m.ctrl.SetSplitReasonMode(false)
 	case m.planMode:
 		m.planMode = false
+		m.splitReasonMode = true
 		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
+		m.ctrl.SetSplitReasonMode(true)
 	case m.ctrl.ToolApprovalMode() == control.ToolApprovalDontAsk:
 		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
 	case m.ctrl.ToolApprovalMode() == control.ToolApprovalAsk:
@@ -4178,12 +4198,16 @@ func (m chatTUI) modeTagText() string {
 	toolApprovalMode := m.ctrl.ToolApprovalMode()
 	if m.desktopShortcutLayout() {
 		switch {
+		case m.splitReasonMode && toolApprovalMode == control.ToolApprovalYolo:
+			return "SplitReason+YOLO"
 		case m.planMode && toolApprovalMode == control.ToolApprovalYolo:
 			return "Plan+YOLO"
 		case goalMode && toolApprovalMode == control.ToolApprovalYolo:
 			return "Goal+YOLO"
 		case toolApprovalMode == control.ToolApprovalYolo:
 			return "YOLO"
+		case m.splitReasonMode:
+			return "SplitReason"
 		case m.planMode:
 			return "Plan"
 		case goalMode && toolApprovalMode == control.ToolApprovalAuto:
@@ -4199,6 +4223,8 @@ func (m chatTUI) modeTagText() string {
 		}
 	}
 	switch {
+	case m.splitReasonMode && toolApprovalMode == control.ToolApprovalYolo:
+		return "SplitReason+YOLO"
 	case m.planMode && toolApprovalMode == control.ToolApprovalYolo:
 		return "Plan+YOLO"
 	case m.planMode && toolApprovalMode == control.ToolApprovalAuto:
@@ -4213,6 +4239,8 @@ func (m chatTUI) modeTagText() string {
 		return "Auto+Approve"
 	case toolApprovalMode == control.ToolApprovalDontAsk:
 		return "Don't Ask"
+	case m.splitReasonMode:
+		return "SplitReason"
 	case m.planMode:
 		return "Plan"
 	case goalMode:
@@ -4495,6 +4523,15 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 	case event.Usage:
 		if e.Usage != nil {
 			m.turnTokens += e.Usage.CompletionTokens
+			// Track tokens for splitreason master/slave models
+			if m.splitReasonMode && e.Source != "" {
+				switch e.Source {
+				case "splitreason_master":
+					m.splitReasonMasterTokens += e.Usage.CompletionTokens
+				case "splitreason_slave":
+					m.splitReasonSlaveTokens += e.Usage.CompletionTokens
+				}
+			}
 		}
 		if m.showTurnUsage {
 			if line := renderTurnReceipt(e.Usage, e.Pricing, e.CacheDiagnostics); line != "" {
@@ -4594,7 +4631,12 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 
 	case event.Phase:
 		m.finalizeStreamed()
-		m.commitLine(fmt.Sprintf("[%s]", e.Text))
+		// SplitReason phases get special formatting for TUI
+		if strings.HasPrefix(e.Text, "SplitReason:") {
+			m.commitLine(fmt.Sprintf("🔀 %s", e.Text))
+		} else {
+			m.commitLine(fmt.Sprintf("[%s]", e.Text))
+		}
 
 	case event.ApprovalRequest:
 		// The controller's run goroutine is now blocked inside the gate awaiting

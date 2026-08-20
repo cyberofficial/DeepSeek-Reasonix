@@ -62,6 +62,7 @@ import (
 	"reasonix/internal/taskmonitor"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
+	"reasonix/internal/netclient"
 )
 
 // ErrTurnRunning reports that a caller tried to start a second foreground turn
@@ -138,6 +139,8 @@ type Controller struct {
 	// hookContexts carries one-shot lifecycle hook context into the next real
 	// user turn without changing the cache-stable system prompt.
 	hookContexts []string
+	// cfg is the session's configuration (for splitreason model resolution, etc.)
+	cfg *config.Config
 	// memory owns the loaded memory snapshot, the pending turn-tail notes queue,
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
@@ -294,9 +297,10 @@ type Controller struct {
 	// and rotating are mutually exclusive gates — a turn refuses to start while
 	// a rotation is in progress, and a rotation refuses to start while a turn
 	// runs — so the run loop's session reference cannot change under it.
-	rotating    bool
-	autosaveWG  sync.WaitGroup
-	planMode    bool
+	rotating         bool
+	autosaveWG     sync.WaitGroup
+	planMode       bool
+	splitReasonMode bool
 	sessionPath string
 	// sessionTemp owns the logical-session private temporary directory shared
 	// by Bash calls. Retained for this Controller's lifetime; rotated on
@@ -372,10 +376,11 @@ type RuntimeStatus struct {
 }
 
 const (
-	ToolApprovalAsk     = "ask"
-	ToolApprovalAuto    = "auto"
-	ToolApprovalDontAsk = "dontAsk"
-	ToolApprovalYolo    = "yolo"
+	ToolApprovalAsk         = "ask"
+	ToolApprovalAuto        = "auto"
+	ToolApprovalDontAsk     = "dontAsk"
+	ToolApprovalYolo        = "yolo"
+	ToolApprovalSplitReason = "splitreason"
 )
 
 const (
@@ -523,6 +528,8 @@ type Options struct {
 	// means no transient injection because the stable language policy already
 	// follows the conversation language.
 	ReasoningLanguage string
+	// Config is the session's configuration (for splitreason model resolution, etc.)
+	Config *config.Config
 	// DisableColdResumePrune suppresses the cold-resume cache-state notice.
 	// Resume never rewrites history regardless of this flag.
 	DisableColdResumePrune bool
@@ -665,6 +672,7 @@ func New(opts Options) *Controller {
 		runtimeGeneration:                 opts.RuntimeGeneration,
 		runtimeOwner:                      runtimeOwner,
 		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
+		cfg:                               opts.Config,
 	}
 	// Session-private temporary directory: reuse a shared Manager on hot
 	// rebuild, otherwise create one. Retain so ReleaseResources/Close drop the
@@ -2756,6 +2764,22 @@ func (c *Controller) PlanMode() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.planMode
+}
+
+// SplitReasonMode reports whether the master-slave splitreason loop is active.
+func (c *Controller) SplitReasonMode() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.splitReasonMode
+}
+
+// SetSplitReasonMode enables or disables the splitreason master-slave loop.
+func (c *Controller) SetSplitReasonMode(v bool) {
+	c.mu.Lock()
+	c.splitReasonMode = v
+	c.mu.Unlock()
+	// The executor doesn't need to know about splitreason mode directly;
+	// the loop is orchestrated at the controller level.
 }
 
 // GoalStrict enables or disables strict goal mode. Since the structured
@@ -5781,6 +5805,16 @@ func (c *Controller) Memory() *memory.Set {
 	return c.memory.current()
 }
 
+// Sink returns the current event sink.
+func (c *Controller) Sink() event.Sink {
+	return c.sink
+}
+
+// SetSink replaces the controller's event sink.
+func (c *Controller) SetSink(sink event.Sink) {
+	c.sink = sink
+}
+
 // approval bridge (agent gate → events)
 
 // gateApprover adapts the Controller to permission.Approver. It is distinct
@@ -6298,5 +6332,263 @@ func (c *Controller) emitPlanModeReadOnlyCommandTrustResult(r PlanModeReadOnlyCo
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustSavedFmt, r.Path, prefix)})
 	case strings.TrimSpace(r.CoveredBy) != "":
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustAlreadyFmt, r.Path, r.CoveredBy)})
+	}
+}
+
+// runSplitReasonLoop executes the master-slave splitreason loop for the given input
+func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTask string) error {
+	// Resolve splitreason models from config
+	var masterModel, slaveModel string
+	if cfg := c.cfg; cfg != nil {
+		masterModel, slaveModel, _ = cfg.ResolveSplitReasonModels()
+	}
+	if masterModel == "" || slaveModel == "" {
+		return fmt.Errorf("splitreason models not configured: master_model (master) and default_model (slave) must be set")
+	}
+
+	// Get slave effort (used for future configuration)
+	if cfg := c.cfg; cfg != nil {
+		_ = strings.TrimSpace(cfg.Agent.SplitReasonSlaveEffort)
+	}
+
+	// Resolve provider entries
+	masterEntry, ok := c.cfg.ResolveModel(masterModel)
+	if !ok || masterEntry == nil || !masterEntry.Configured() {
+		return fmt.Errorf("master model %q not configured", masterModel)
+	}
+
+	slaveEntry, ok := c.cfg.ResolveModel(slaveModel)
+	if !ok || slaveEntry == nil || !slaveEntry.Configured() {
+		return fmt.Errorf("slave model %q not configured", slaveModel)
+	}
+
+	// Build master provider config (inline boot.NewProviderWithProxy logic)
+	masterProv, err := provider.New(masterEntry.Kind, provider.Config{
+		Name:    masterEntry.Name,
+		BaseURL: masterEntry.BaseURL,
+		Model:   masterEntry.Model,
+		APIKey:  masterEntry.APIKey(),
+		Extra: map[string]any{
+			"api_key_env":         masterEntry.APIKeyEnv,
+			"api_key_source":      masterEntry.APIKeySourceLabel(),
+			"thinking":            masterEntry.Thinking,
+			"effort":              config.EffectiveEffort(masterEntry),
+			"supported_efforts":   masterEntry.SupportedEfforts,
+			"reasoning_protocol":  config.ReasoningProtocolForEntry(masterEntry),
+			"max_output_tokens":   masterEntry.MaxOutputTokens,
+			"chat_url":            masterEntry.ChatURL,
+			"request_url":         masterEntry.RequestURL,
+			"headers":             masterEntry.Headers,
+			"extra_body":          masterEntry.ExtraBody,
+			"auth_header":         masterEntry.AuthHeader,
+			"proxy_spec":          netclient.ProxySpec{Mode: netclient.ModeAuto},
+			"vision":              config.EffectiveVision(masterEntry),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create master provider: %w", err)
+	}
+
+	// Build slave provider
+	slaveProv, err := provider.New(slaveEntry.Kind, provider.Config{
+		Name:    slaveEntry.Name,
+		BaseURL: slaveEntry.BaseURL,
+		Model:   slaveEntry.Model,
+		APIKey:  slaveEntry.APIKey(),
+		Extra: map[string]any{
+			"api_key_env":         slaveEntry.APIKeyEnv,
+			"api_key_source":      slaveEntry.APIKeySourceLabel(),
+			"thinking":            slaveEntry.Thinking,
+			"effort":              config.EffectiveEffort(slaveEntry),
+			"supported_efforts":   slaveEntry.SupportedEfforts,
+			"reasoning_protocol":  config.ReasoningProtocolForEntry(slaveEntry),
+			"max_output_tokens":   slaveEntry.MaxOutputTokens,
+			"chat_url":            slaveEntry.ChatURL,
+			"request_url":         slaveEntry.RequestURL,
+			"headers":             slaveEntry.Headers,
+			"extra_body":          slaveEntry.ExtraBody,
+			"auth_header":         slaveEntry.AuthHeader,
+			"proxy_spec":          netclient.ProxySpec{Mode: netclient.ModeAuto},
+			"vision":              config.EffectiveVision(slaveEntry),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create slave provider: %w", err)
+	}
+
+	// Create master agent with session containing MasterSystemPrompt
+	masterSession := agent.NewSession(MasterSystemPrompt)
+	masterAgent := agent.New(masterProv, c.mcp.registry(), masterSession, agent.Options{
+		MaxSteps:              10,
+		Temperature:           0.0,
+		TaskBudget:            agent.TaskBudget{},
+		Pricing:               masterEntry.Price,
+		UsageSource:           event.UsageSourceExecutor,
+		ModelRef:              masterModel,
+		RequireVisibleFinal:   true,
+		Gate:                  c.subagentGate,
+		ReadOnlyExecution:     false,
+		PlannerMCPExecution:   false,
+		ContextWindow:         masterEntry.ContextWindow,
+		CompactRatio:          c.cfg.Agent.CompactRatio,
+		RecentKeep:            c.cfg.Agent.RecentKeep,
+		ArchiveDir:            config.ArchiveDir(),
+		Hooks:                 c.hooks,
+		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),
+		Jobs:                  c.jobs,
+		Scheduler:             c.scheduler,
+		WriteScheduler:        nil,
+		WriteWorkspaceRoot:    c.workspaceRoot,
+		WriteRoots:            c.writeAccess.roots,
+		WorkspaceLease:        c.workspaceLease,
+		MutationObserver:      c.mutationObserver,
+		SubagentDepth:         0,
+		MaxSubagentDepth:      c.cfg.Agent.MaxSubagentDepth,
+		Extensions:            c.extensions,
+		CapabilityLedger:      nil,
+		CapabilityAudit:       nil,
+		RequireReviewReportKind: "",
+		ReasoningLanguage:     c.reasoningLanguage,
+		ResponseLanguage:      c.responseLanguage,
+		PlanModeReadOnlyCommands: c.cfg.Agent.PlanModeReadOnlyCommands,
+		RecoveryGate:          c.recoveryGate,
+		RecoveryAgentID:       "",
+		RecoveryTaskID:        "",
+	}, c.sink)
+
+	// Create slave agent with session containing SlaveSystemPrompt
+	slaveSession := agent.NewSession(SlaveSystemPrompt)
+	slaveAgent := agent.New(slaveProv, agent.ReadOnlySubagentToolRegistryForDepthWithRuntime(c.mcp.registry(), nil, 1, c.cfg.Agent.MaxSubagentDepth, c.capabilityRuntime), slaveSession, agent.Options{
+		MaxSteps:              5,
+		Temperature:           0.0,
+		TaskBudget:            agent.TaskBudget{},
+		Pricing:               slaveEntry.Price,
+		UsageSource:           event.UsageSourceExecutor,
+		ModelRef:              slaveModel,
+		RequireVisibleFinal:   true,
+		Gate:                  c.subagentGate,
+		ReadOnlyExecution:     true,
+		PlannerMCPExecution:   false,
+		ContextWindow:         slaveEntry.ContextWindow,
+		CompactRatio:          c.cfg.Agent.CompactRatio,
+		RecentKeep:            c.cfg.Agent.RecentKeep,
+		Hooks:                 c.hooks,
+		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),
+		Jobs:                  nil,
+		Scheduler:             nil,
+		WriteScheduler:        nil,
+		WriteWorkspaceRoot:    c.workspaceRoot,
+		WriteRoots:            c.writeAccess.roots,
+		WorkspaceLease:        c.workspaceLease,
+		MutationObserver:      c.mutationObserver,
+		SubagentDepth:         1,
+		MaxSubagentDepth:      c.cfg.Agent.MaxSubagentDepth,
+		Extensions:            c.extensions,
+		CapabilityLedger:      nil,
+		CapabilityAudit:       nil,
+		RequireReviewReportKind: "",
+		ReasoningLanguage:     c.reasoningLanguage,
+		ResponseLanguage:      c.responseLanguage,
+		PlanModeReadOnlyCommands: c.cfg.Agent.PlanModeReadOnlyCommands,
+		RecoveryGate:          c.recoveryGate,
+		RecoveryAgentID:       "slave",
+		RecoveryTaskID:        "",
+	}, c.sink)
+
+	// Create controllers with the new agents
+	masterOpts := *c.optsForRebuild()
+	masterOpts.Runner = masterAgent
+	masterOpts.Executor = masterAgent
+	masterOpts.ModelRef = masterModel
+	masterOpts.SystemPrompt = MasterSystemPrompt
+	masterOpts.SessionPath = ""
+
+	masterCtrl := New(masterOpts)
+
+	slaveOpts := *c.optsForRebuild()
+	slaveOpts.Runner = slaveAgent
+	slaveOpts.Executor = slaveAgent
+	slaveOpts.ModelRef = slaveModel
+	slaveOpts.SystemPrompt = SlaveSystemPrompt
+	slaveOpts.SessionPath = ""
+
+	slaveCtrl := New(slaveOpts)
+
+	// Create loop from pre-built controllers
+	loop := NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl)
+	defer loop.Close()
+
+	// Emit phase event for TUI
+	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: starting master-slave loop"})
+
+	// Run the loop
+	err = loop.Run(ctx, userTask)
+	if err != nil {
+		c.sink.Emit(event.Event{Kind: event.Phase, Text: fmt.Sprintf("SplitReason: loop error: %v", err)})
+		return err
+	}
+
+	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: task completed"})
+	return nil
+}
+
+// optsForRebuild returns a copy of the options needed to rebuild a controller
+func (c *Controller) optsForRebuild() *Options {
+	return &Options{
+		Runner:                    c.runner,
+		Executor:                  c.executor,
+		Guardian:                  c.guardianSess,
+		RecoveryReviewer:          nil,
+		RecoveryHeadless:          false,
+		TaskBudget:                c.taskBudget,
+		GoalTokenBudget:           c.goalTokenBudget,
+		GoalEvaluator:             c.evaluator,
+		Sink:                      c.sink,
+		Policy:                    c.policy,
+		SubagentGate:              c.subagentGate,
+		Label:                     c.label,
+		ModelRef:                  c.modelRef,
+		SystemPrompt:              c.systemPrompt,
+		SessionDir:                c.sessionDir,
+		SessionPath:               c.sessionPath,
+		Host:                      c.Host(),
+		Commands:                  c.Commands(),
+		Skills:                    c.SlashSkills(),
+		AllSkills:                 c.AllSkills(),
+		SkillStore:                c.skills.EnabledStore(),
+		AllSkillStore:             c.skills.AllStore(),
+		DisableImplicitSkillInvocation: c.disableImplicitSkillInvocation,
+		SkillRunner:               c.skillRunner,
+		ReadOnlySkillRunner:       c.readOnlySkillRunner,
+		SkillProfile:              c.skillProfile,
+		Hooks:                     c.hooks,
+		Memory:                    c.memory.set,
+		Cleanup:                   c.cleanup,
+		ResponseLanguage:          c.responseLanguage,
+		ReasoningLanguage:         c.reasoningLanguage,
+		DisableColdResumePrune:    c.disableColdResumePrune,
+		Shell:                     c.shell,
+		OnRemember:                c.onRemember,
+		OnRememberPlanModeReadOnlyCommand: c.onRememberPlanModeReadOnlyCommand,
+		WriteRoots:                c.writeAccess.roots,
+		BalanceURL:                c.balanceURL,
+		BalanceKey:                c.balanceKey,
+		BalanceClient:             c.balanceClient,
+		Jobs:                      c.jobs,
+		Scheduler:                 c.scheduler,
+		WorkspaceLease:            c.workspaceLease,
+		Registry:                  c.mcp.registry(),
+		PluginCtx:                 c.mcp.pluginCtx,
+		MCPDefaultCallTimeout:     c.mcpDefaultCallTimeout,
+		MCPConfigureSpec:          c.mcpConfigureSpec,
+		CapabilityRuntime:         c.capabilityRuntime,
+		WorkspaceRoot:             c.workspaceRoot,
+		ExternalFolderToolRefs:    c.externalFolderToolRefs,
+		ProviderResolver:          c.providerResolver,
+		RuntimeGeneration:         c.runtimeGeneration,
+		RuntimeOwner:              c.runtimeOwner,
+		ApprovalTimeout:           c.approval.approvalTimeout,
+		Ablation:                  c.ablation,
+		Config:                    c.cfg,
 	}
 }

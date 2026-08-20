@@ -4167,6 +4167,8 @@ func TestDesktopShortcutLayoutShiftTabCyclesSafeModes(t *testing.T) {
 	}
 
 	shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+
+	// 1st Shift+Tab: Auto -> Plan
 	out, _ := m.Update(shiftTab)
 	m = out.(chatTUI)
 	if !m.planMode || !m.ctrl.PlanMode() {
@@ -4175,20 +4177,41 @@ func TestDesktopShortcutLayoutShiftTabCyclesSafeModes(t *testing.T) {
 	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
 		t.Fatalf("plan mode approval = %q, want ask", got)
 	}
+	if m.splitReasonMode {
+		t.Fatalf("splitReasonMode should be false in plan mode")
+	}
 
+	// 2nd Shift+Tab: Plan -> SplitReason
 	out, _ = m.Update(shiftTab)
 	m = out.(chatTUI)
 	if m.planMode || m.ctrl.PlanMode() {
 		t.Fatalf("second Shift+Tab should leave plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
+	if !m.splitReasonMode {
+		t.Fatalf("second Shift+Tab should enter splitreason mode")
+	}
 	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
-		t.Fatalf("cycle after plan = %q, want ask", got)
+		t.Fatalf("splitreason mode approval = %q, want ask", got)
 	}
 
+	// 3rd Shift+Tab: SplitReason -> Ask
 	out, _ = m.Update(shiftTab)
 	m = out.(chatTUI)
-	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto || m.planMode {
-		t.Fatalf("third Shift+Tab should enter auto, approval=%q plan=%v", got, m.planMode)
+	if m.splitReasonMode {
+		t.Fatalf("third Shift+Tab should leave splitreason mode")
+	}
+	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
+		t.Fatalf("cycle after splitreason = %q, want ask", got)
+	}
+
+	// 4th Shift+Tab: Ask -> Auto
+	out, _ = m.Update(shiftTab)
+	m = out.(chatTUI)
+	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto {
+		t.Fatalf("fourth Shift+Tab should enter auto, approval=%q", got)
+	}
+	if m.splitReasonMode {
+		t.Fatalf("splitReasonMode should be false in auto")
 	}
 }
 

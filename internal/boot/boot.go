@@ -1744,6 +1744,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		SkillProfile:                   skillProfile,
 		Hooks:                          hookRunner,
 		Memory:                         mem,
+		Config:                         cfg,
 		// Indirection: the cleanup variable gains the extension runtime set at
 		// the end of build (snapshot assembly runs after control.New), and the
 		// controller must observe the final chain at Close time.

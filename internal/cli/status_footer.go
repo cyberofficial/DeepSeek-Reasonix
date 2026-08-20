@@ -287,6 +287,21 @@ func (m chatTUI) statusTelemetryGroups() []string {
 		if value, show := m.nextJobStatus(); show {
 			data = append(data, footerMetric(i18n.M.ChatStatusNextJobLabel, footerInfo(value)))
 		}
+		// SplitReason token breakdown
+		if m.splitReasonMode {
+			if m.splitReasonMasterTokens > 0 || m.splitReasonSlaveTokens > 0 {
+				parts := []string{}
+				if m.splitReasonMasterTokens > 0 {
+					parts = append(parts, "M:"+shortTokens(m.splitReasonMasterTokens))
+				}
+				if m.splitReasonSlaveTokens > 0 {
+					parts = append(parts, "S:"+shortTokens(m.splitReasonSlaveTokens))
+				}
+				if len(parts) > 0 {
+					data = append(data, footerMetric(i18n.M.ChatStatusSplitReasonHint, footerInfo(strings.Join(parts, " "))))
+				}
+			}
+		}
 	}
 	if m.balance != "" {
 		data = append(data, footerMetric(i18n.M.ChatStatusBalanceLabel, footerValue(m.balance)))
