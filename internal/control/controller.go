@@ -6416,9 +6416,13 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		return fmt.Errorf("create slave provider: %w", err)
 	}
 
-	// Create master agent with session containing MasterSystemPrompt
+	// Create master agent with session containing MasterSystemPrompt.
+	// Use an EMPTY registry: the master must NEVER make tool calls. It only
+	// outputs the handoff JSON as a final text answer. Any tool registry would
+	// let the provider parse the handoff's "action" fields as tool calls, which
+	// makes the agent loop forever instead of ending the turn.
 	masterSession := agent.NewSession(MasterSystemPrompt)
-	masterAgent := agent.New(masterProv, c.mcp.registry(), masterSession, agent.Options{
+	masterAgent := agent.New(masterProv, tool.NewRegistry(), masterSession, agent.Options{
 		MaxSteps:              10,
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
@@ -6456,7 +6460,8 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		RecoveryTaskID:        "",
 	}, c.sink)
 
-	// Create slave agent with session containing SlaveSystemPrompt
+	// Create slave agent with a permissive YOLO gate so it can execute tools without blocking
+	slaveGate := NewSharedHeadlessGate(c.policy, ToolApprovalYolo)
 	slaveSession := agent.NewSession(SlaveSystemPrompt)
 	slaveAgent := agent.New(slaveProv, agent.ReadOnlySubagentToolRegistryForDepthWithRuntime(c.mcp.registry(), nil, 1, c.cfg.Agent.MaxSubagentDepth, c.capabilityRuntime), slaveSession, agent.Options{
 		MaxSteps:              5,
@@ -6466,7 +6471,7 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		UsageSource:           event.UsageSourceExecutor,
 		ModelRef:              slaveModel,
 		RequireVisibleFinal:   true,
-		Gate:                  c.subagentGate,
+		Gate:                  slaveGate,
 		ReadOnlyExecution:     true,
 		PlannerMCPExecution:   false,
 		ContextWindow:         slaveEntry.ContextWindow,

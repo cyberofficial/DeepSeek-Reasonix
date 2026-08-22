@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"reasonix/internal/event"
+	"reasonix/internal/provider"
 )
 
 // Handoff protocol types
@@ -38,7 +39,7 @@ type Handoff struct {
 
 type Instruction struct {
 	ID          string   `json:"id"`
-	Action      string   `json:"action"`       // tool name: "read", "write", "edit", "shell", "grep", "glob", "task"
+	Action      string   `json:"action"`       // tool name: "delegate_read_file", "delegate_write_file", "delegate_edit_file", "shell", "grep", "glob", "task"
 	Args        string   `json:"args"`         // JSON args for the tool
 	Description string   `json:"description"`  // human-readable description
 	DependsOn   []string `json:"depends_on,omitempty"`
@@ -69,11 +70,18 @@ const MasterSystemPrompt = `# MASTER SYSTEM PROMPT (SPLITREASON ARCHITECT)
 You are the **Architect** in a master–slave execution loop.
 Your role: HIGH-LEVEL PLANNING AND REASONING. You do NOT execute tools.
 
+## ⛔ CRITICAL OUTPUT RULES — VIOLATION = FAILURE:
+❌ NO TEXT BEFORE { OR AFTER } — NOT EVEN A NEWLINE
+❌ NO REASONING, NO THINKING, NO ANALYSIS, NO EXPLANATIONS, NO PLANNING TEXT
+❌ NO MARKDOWN, CODE FENCES, FORMATTING
+✅ YOUR ENTIRE RESPONSE = ONE JSON OBJECT STARTING WITH { AND ENDING WITH }
+✅ STOP IMMEDIATELY AFTER THE FINAL } — NO NEWLINE, NO SPACE, NOTHING
+
 ## OUTPUT FORMAT (strict JSON):
 {
   "handoff": {
     "objective": "string - what slave must accomplish",
-    "instructions": [{"id": "1", "action": "tool_name", "args": "JSON string", "description": "what slave does"}]
+    "instructions": [{"id": "1", "action": "tool_name", "args": "JSON string", "description": "what slave does"}],
     "success_criteria": ["verifiable condition 1"],
     "context_summary": "why this task, what user wants",
     "master_reasoning": "string - YOUR REASONING PROCESS FOR THE SLAVE",
@@ -84,21 +92,21 @@ Your role: HIGH-LEVEL PLANNING AND REASONING. You do NOT execute tools.
 
 You MUST include "master_reasoning" with your thinking process.
 The slave will receive this as context to understand your intent.
-Your output MUST be valid JSON. No text outside the JSON object.
+Your output MUST be valid JSON. No text outside the JSON object. STOP AFTER }.
 
 PATTERNS:
 
 USER: "Hello" / "Hi" / "Hey"
-{"handoff":{"objective":"Greet user","instructions":[{"id":"1","action":"respond","args":"{"message":"Hello! How can I help?"}","description":"Greet"}],"success_criteria":["User greeted"],"context_summary":"User greeted","master_reasoning":"Simple greeting - respond politely without file ops","allowed_tools":["respond"],"budget_tokens":500}}
+{"handoff":{"objective":"Greet user","instructions":[{"id":"1","action":"delegate_respond","args":"{\"message\":\"Hello! How can I help?\"}","description":"Greet"}],"success_criteria":["User greeted"],"context_summary":"User greeted","master_reasoning":"Simple greeting - respond politely without file ops","allowed_tools":["respond"],"budget_tokens":500}}
 
 USER: "Tell me about X" / "What is X" / "Explain X" / "Describe X"
 {
   "handoff": {
     "objective": "Answer user question about repository",
     "instructions": [
-      {"id": "1", "action": "read_file", "args": "{"path": "REASONIX.md"}", "description": "Read project memory", "depends_on": []},
-      {"id": "2", "action": "read_file", "args": "{"path": "README.md"}", "description": "Read project overview", "depends_on": ["1"]},
-      {"id": "3", "action": "respond", "args": "{"message": "This repository is..."}", "description": "Deliver answer", "depends_on": ["1", "2"]}
+      {"id": "1", "action": "delegate_read_file", "args": "{\"path\": \"REASONIX.md\"}", "description": "Read project memory", "depends_on": []},
+      {"id": "2", "action": "delegate_read_file", "args": "{\"path\": \"README.md\"}", "description": "Read project overview", "depends_on": ["1"]},
+      {"id": "3", "action": "delegate_respond", "args": "{\"message\": \"This repository is...\"}", "description": "Deliver answer", "depends_on": ["1", "2"]}
     ],
     "success_criteria": ["Files read", "Answer delivered"],
     "context_summary": "User asked about repo. Slave reads files then answers.",
@@ -113,71 +121,56 @@ USER: "Add function" / "Fix bug" / "Refactor X"
   "handoff": {
     "objective": "Implement code change",
     "instructions": [
-      {"id": "1", "action": "read_file", "args": "{"path": "path/to/file"}", "description": "Read target file", "depends_on": []},
-      {"id": "2", "action": "edit_file", "args": "{"path": "path/to/file", "old_text": "...", "new_text": "..."}", "description": "Make change", "depends_on": ["1"]},
-      {"id": "3", "action": "shell", "args": "{"command": "go build ./..."}", "description": "Verify build", "depends_on": ["2"]}
+      {"id": "1", "action": "delegate_read_file", "args": "{\"path\": \"path/to/file\"}", "description": "Read target file", "depends_on": []},
+      {"id": "2", "action": "delegate_edit_file", "args": "{\"path\": \"path/to/file\", \"old_text\": \"...\", \"new_text\": \"...\"}", "description": "Make change", "depends_on": ["1"]},
+      {"id": "3", "action": "delegate_shell", "args": "{\"command\": \"go build ./...\"}", "description": "Verify build", "depends_on": ["2"]}
     ],
     "success_criteria": ["Changes compile", "Tests pass"], "context_summary": "Code change requested", "master_reasoning": "Code change requested. Slave reads file, makes edit, verifies build.", "allowed_tools": ["read_file", "edit_file", "shell"], "budget_tokens": 8000
   }
 }
 
-VALID ACTIONS: "respond" (for answers), "read_file", "write_file", "edit_file", "multiedit", "shell", "grep", "glob", "task"
-❌ NO TEXT OUTSIDE JSON.
-❌ NO "read" — USE "read_file". NO "edit" — USE "edit_file". NO "write" — USE "write_file".
+VALID ACTIONS (USE EXACTLY THESE NAMES):
+- "delegate_respond" - send message to user (greetings, answers, final output) — NOT A TOOL, put in results
+- "delegate_read_file" - read a file → maps to read_file tool
+- "delegate_write_file" - create file → maps to write_file tool
+- "delegate_edit_file" - edit file → maps to edit_file tool
+- "delegate_multiedit" - batch edit file → maps to multiedit tool
+- "delegate_shell" - run command → maps to shell tool
+- "delegate_grep" - search text → maps to grep tool
+- "delegate_glob" - find files → maps to glob tool
+- "delegate_task" - spawn sub-agent (complex multi-step only)
+
+❌ VIOLATION = FAILURE:
+❌ Any text before { or after } — INCLUDING NEWLINES
+❌ Any reasoning, thinking, analysis, explanations, planning text
+❌ Any markdown, code fences, formatting
+❌ Any action not in the list above
+❌ USING REAL TOOL NAMES — USE DELEGATE_ PREFIX INSTEAD
+❌ "Tell me about X" → YOU ANSWERING = FAIL. MUST DELEGATE.
+❌ "Hello" → YOU READING FILES = FAIL. USE DELEGATE_RESPOND.
 `
 
 const SlaveSystemPrompt = `
 
 You are the **Executor** in a master–slave execution loop.
-Your role: EXECUTE PRECISE INSTRUCTIONS from the Architect.
+Your role: EXECUTE the instructions from the Architect, then answer the user.
 
-## ⛔ CRITICAL: YOU OUTPUT ONLY A SINGLE JSON OBJECT - NOTHING ELSE
-❌ NO reasoning, NO thinking, NO analysis, NO explanations, NO text before/after
-✅ YOUR ENTIRE RESPONSE = ONE JSON OBJECT EXACTLY AS SPECIFIED BELOW
+## Task
+You are given an objective, some instructions describing steps to perform,
+and context (including the Architect's reasoning). Carry out the steps using
+the tools available to you (read_file, write_file, edit_file, multiedit,
+shell, grep, glob, task), then report the result to the user in a clear,
+concise, natural-language answer.
 
-## Input:
-You receive a structured Handoff with:
-- objective, instructions[], success_criteria[], context_summary, allowed_tools, budget_tokens
-- master_reasoning (optional): The master's reasoning process and intent for this task
-
-## Your Behavior:
-1. Execute instructions IN ORDER (respect depends_on)
-2. Use ONLY these tools: "read_file", "write_file", "edit_file", "multiedit", "shell", "grep", "glob", "task"
-2. For "read_file"/"write_file"/"edit_file"/"multiedit"/"shell"/"grep"/"glob": MAKE TOOL CALLS
-3. For "respond": THIS IS YOUR FINAL OUTPUT FORMAT - see below — NOT A TOOL, PUT IN results[].output
-
-## YOUR FINAL OUTPUT = COMPLETED HANDOFF JSON (see format below)
-⚠️ DO NOT USE "respond" AS A TOOL CALL - INSTEAD, INCLUDE THE MESSAGE IN results[].output
-⚠️ YOU DO NOT CALL ANY TOOL FOR THE FINAL "respond" - PUT THE MESSAGE IN THE JSON
-
-## YOUR FINAL OUTPUT MUST BE EXACTLY THIS JSON STRUCTURE:
-{
-  "handoff": {
-    "objective": "same as input objective",
-    "instructions": [
-      {"id": "1", "action": "read_file", "args": "{\"path\": \"REASONIX.md\"}", "description": "..."}
-    ],
-    "success_criteria": ["Files read", "Answer delivered"],
-    "context_summary": "User asked about repo, I read files and compiled answer",
-    "allowed_tools": ["read_file", "respond"],
-    "budget_tokens": 2000,
-    "results": [
-      {"instruction_id": "1", "success": true, "output": "file content here", "error": "", "duration_ms": 50},
-      {"instruction_id": "2", "success": true, "output": "file content here", "error": "", "duration_ms": 30},
-      {"instruction_id": "3", "success": true, "output": "Here is the repo overview...", "error": "", "duration_ms": 10}
-    ],
-    "outcome": "success",
-    "observations": "Read REASONIX.md and README.md, compiled answer",
-    "errors": []
-  }
-}
-
-## ⛔ VIOLATION = IMMEDIATE FAILURE:
-❌ ANY text before { or after }
-❌ Any reasoning, thinking, analysis, explanation, planning text
-❌ Any markdown, code fences, formatting
-❌ "respond" as a tool call - it goes in the JSON "results" field
-❌ For questions/info → YOU MUST include answer in results[].output, not as tool call
+## How to behave
+1. Follow the instructions in order, respecting their dependencies.
+2. Use the tool described by each step's "Action" field with the "Args" as
+   its arguments. "respond" means: that step is where you produce the final
+   answer for the user.
+3. If a step fails, report what happened and what you tried, and whether the
+   work is complete.
+4. Once you have the information, give the user a complete answer directly
+   (this is your final response).
 `
 
 // SplitReasonLoop orchestrates the master-slave execution loop
@@ -258,115 +251,74 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) error {
 	return fmt.Errorf("max turns (%d) exceeded", s.maxTurns)
 }
 
-// runMasterTurn runs a single master turn and parses the handoff JSON
-func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string) (*Handoff, error) {
-	// The master controller's sink will receive events
-	// We need to capture the final message and parse the handoff
-	doneCh := make(chan struct{})
-	var handoff *Handoff
-	var firstErr error
-
-	// Wrap sink to capture the final message
-	origSink := s.masterController.Sink()
-	s.masterController.SetSink(&capturingSink{
-		Sink: origSink,
-		onMessage: func(msg string) {
-			// Try to extract handoff JSON from the message
-			if extracted := extractHandoffJSON(msg); extracted != nil {
-				handoff = extracted
+// lastAssistantContent returns the text content of the most recent assistant
+// message in the conversation history (scanning from the end), or "" if none.
+func lastAssistantContent(hist []provider.Message) string {
+	for i := len(hist) - 1; i >= 0; i-- {
+		if hist[i].Role == provider.RoleAssistant {
+			t := strings.TrimSpace(hist[i].Content)
+			if t != "" {
+				return t
 			}
-		},
-		onDone: func() {
-			close(doneCh)
-		},
-	})
+		}
+	}
+	return ""
+}
 
-	// Run master turn
+// runMasterTurn runs a single master turn and parses the handoff JSON from the
+// the master's final assistant message in the conversation. It does NOT rely on
+// sink interception (which cannot see the executor's emitted events); it reads
+// the result directly from History() after the synchronous RunTurn returns.
+func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string) (*Handoff, error) {
 	if err := s.masterController.RunTurn(ctx, input); err != nil {
 		return nil, err
 	}
-
-	// Wait for completion
-	<-doneCh
-
-	// Restore original sink
-	s.masterController.SetSink(origSink)
-
-	if handoff == nil {
-		return nil, fmt.Errorf("master did not emit valid handoff JSON")
+	text := lastAssistantContent(s.masterController.History())
+	if text == "" {
+		return nil, fmt.Errorf("master did not produce a handoff")
 	}
-
-	return handoff, firstErr
+	if h := extractHandoffJSON(text); h != nil {
+		return h, nil
+	}
+	return nil, fmt.Errorf("master did not emit a valid handoff JSON")
 }
 
-// runSlaveTurn executes the handoff using the slave controller
+// runSlaveTurn executes the handoff using the slave controller. After the slave
+// runs (executing its tools and answering), it reads the slave's final text
+// answer from History() and wraps it into a completed handoff. No strict JSON
+// is required of the slave — its natural-language answer becomes the result.
 func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*Handoff, error) {
-	// Convert handoff to slave input
 	slaveInput := s.buildSlaveInput(handoff)
 
-	// Wrap sink to capture the slave's response
-	doneCh := make(chan struct{})
-	var completedHandoff *Handoff
-
-	origSink := s.slaveController.Sink()
-	s.slaveController.SetSink(&capturingSink{
-		Sink: origSink,
-		onMessage: func(msg string) {
-			if extracted := extractHandoffJSON(msg); extracted != nil {
-				completedHandoff = extracted
-			}
-		},
-		onDone: func() {
-			close(doneCh)
-		},
-	})
-
-	// Run slave turn
-	if err := s.slaveController.RunTurn(ctx, slaveInput); err != nil {
-		s.slaveController.SetSink(origSink)
-		return s.createFailedHandoff(handoff, err), nil
+	runErr := s.slaveController.RunTurn(ctx, slaveInput)
+	if runErr != nil && ctx.Err() == nil {
+		return s.createFailedHandoff(handoff, runErr), nil
 	}
 
-	// Wait for completion
-	<-doneCh
+	answer := lastAssistantContent(s.slaveController.History())
 
-	// Restore original sink
-	s.slaveController.SetSink(origSink)
-
-	if completedHandoff == nil {
-		// If slave didn't output valid JSON, create a failed handoff
-		return s.createFailedHandoff(handoff, fmt.Errorf("slave did not emit valid handoff JSON")), nil
+	completed := &Handoff{
+		Objective:       handoff.Objective,
+		Instructions:    handoff.Instructions,
+		SuccessCriteria: handoff.SuccessCriteria,
+		ContextSummary:  handoff.ContextSummary,
+		AllowedTools:    handoff.AllowedTools,
+		BudgetTokens:    handoff.BudgetTokens,
+		Outcome:         HandoffSuccess,
 	}
 
-	// Ensure the completed handoff has the original objective and instructions
-	completedHandoff.Objective = handoff.Objective
-	completedHandoff.Instructions = handoff.Instructions
-	completedHandoff.SuccessCriteria = handoff.SuccessCriteria
-	completedHandoff.ContextSummary = handoff.ContextSummary
-	completedHandoff.AllowedTools = handoff.AllowedTools
-	completedHandoff.BudgetTokens = handoff.BudgetTokens
-
-	// If the slave returned a simple response format (type + content) instead of the full
-	// handoff structure, convert it to the proper format with outcome and results
-	if completedHandoff.Outcome == "" && len(completedHandoff.Results) == 0 {
-		// Try to extract content from simple format: {"type": "text", "content": "..."}
-		if content := s.extractSimpleResponse(completedHandoff); content != "" {
-			completedHandoff.Outcome = HandoffSuccess
-			completedHandoff.Results = []InstructionResult{
-				{
-					InstructionID: "final",
-					Success:       true,
-					Output:        content,
-					Error:         "",
-					DurationMs:    0,
-				},
-			}
-			completedHandoff.Observations = "Converted simple text response to handoff format"
-			completedHandoff.Errors = nil
-		}
+	if answer != "" {
+		completed.Results = []InstructionResult{{
+			InstructionID: "final",
+			Success:       true,
+			Output:        answer,
+		}}
+		completed.Observations = "Slave executed the handoff and delivered the answer"
+	} else if ctx.Err() != nil {
+		completed.Outcome = HandoffFailed
+		completed.Errors = []string{ctx.Err().Error()}
 	}
-
-	return completedHandoff, nil
+	return completed, nil
 }
 
 // buildMasterInput constructs the input for the master turn
@@ -410,7 +362,10 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 	return strings.Join(parts, "\n")
 }
 
-// buildSlaveInput constructs the input for the slave turn
+// buildSlaveInput constructs the input for the slave turn.
+// It translates the master's "delegate_*" action names to the real tool names
+// the slave can actually call (read_file, edit_file, shell, etc.), so the
+// slave does not try to call non-existent "delegate_*" tools.
 func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	var parts []string
 	parts = append(parts, "## Objective")
@@ -423,10 +378,13 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 		parts = append(parts, handoff.ContextSummary)
 	}
 
+	parts = append(parts, "\n## Context")
+	parts = append(parts, handoff.ContextSummary)
+
 	parts = append(parts, "\n## Instructions")
 	for _, inst := range handoff.Instructions {
 		parts = append(parts, fmt.Sprintf("\n### Step %s: %s", inst.ID, inst.Description))
-		parts = append(parts, fmt.Sprintf("Action: %s", inst.Action))
+		parts = append(parts, fmt.Sprintf("Action: %s", delegateToTool(inst.Action)))
 		if inst.Args != "" {
 			parts = append(parts, fmt.Sprintf("Args: %s", inst.Args))
 		}
@@ -466,6 +424,34 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	parts = append(parts, "CRITICAL: Output ONLY the JSON. No reasoning, no explanations, no extra text!")
 
 	return strings.Join(parts, "\n")
+}
+
+// delegateToTool maps the master's "delegate_*" action names to the real tool
+// names the slave can call. The master uses delegate_ prefixes so its output
+// never looks like tool calls, but the slave needs the real tool names.
+func delegateToTool(action string) string {
+	switch action {
+	case "delegate_read_file":
+		return "read_file"
+	case "delegate_write_file":
+		return "write_file"
+	case "delegate_edit_file":
+		return "edit_file"
+	case "delegate_multiedit":
+		return "multiedit"
+	case "delegate_shell":
+		return "shell"
+	case "delegate_grep":
+		return "grep"
+	case "delegate_glob":
+		return "glob"
+	case "delegate_task":
+		return "task"
+	case "delegate_respond", "respond":
+		return "respond" // handled specially by the slave as its final answer
+	default:
+		return action
+	}
 }
 
 // validateHandoff validates the handoff structure
@@ -624,7 +610,7 @@ func extractHandoffJSON(text string) *Handoff {
 			if depth > 0 {
 				depth--
 				if depth == 0 && start >= 0 {
-					candidate := text[start : i+1]
+					candidate := text[start:i+1]
 					results = append(results, candidate)
 				}
 			}
