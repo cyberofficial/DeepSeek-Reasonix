@@ -200,36 +200,31 @@ func NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl *Controller) *Split
 	}
 }
 
-// Run executes the splitreason loop with the given user task
-func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) error {
-	// Initialize master with user task
+// Run executes the splitreason loop with the given user task and returns the
+// final answer text delivered by the slave once the task is complete, or an
+// error if it never finished.
+func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, error) {
 	masterInput := s.buildMasterInput(userTask, nil)
 
 	for turn := 0; turn < s.maxTurns; turn++ {
-		// Check context cancellation
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		default:
 		}
 
-		// === MASTER: Generate handoff ===
 		handoff, err := s.runMasterTurn(ctx, masterInput)
 		if err != nil {
-			return fmt.Errorf("master turn %d failed: %w", turn, err)
+			return "", fmt.Errorf("master turn %d failed: %w", turn, err)
 		}
 
-		// Validate handoff
 		if err := s.validateHandoff(handoff); err != nil {
-			// Send correction to master
 			masterInput = s.buildMasterInput(userTask, handoff, err)
 			continue
 		}
 
-		// === SLAVE: Execute handoff ===
 		completedHandoff, err := s.runSlaveTurn(ctx, handoff)
 		if err != nil {
-			// Slave infrastructure error - report to master
 			handoff.Outcome = HandoffFailed
 			handoff.Errors = []string{err.Error()}
 			s.recordHandoff(handoff)
@@ -237,18 +232,37 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) error {
 			continue
 		}
 
-		// Record completed handoff
 		s.recordHandoff(completedHandoff)
 
-		// === MASTER: Review outcome ===
+		if answer := findHandoffAnswer(completedHandoff); answer != "" {
+			return answer, nil
+		}
+
 		done, nextInput := s.reviewHandoff(completedHandoff)
 		if done {
-			return nil
+			return "", nil
 		}
 		masterInput = nextInput
 	}
 
-	return fmt.Errorf("max turns (%d) exceeded", s.maxTurns)
+	return "", fmt.Errorf("max turns (%d) exceeded", s.maxTurns)
+}
+
+// findHandoffAnswer returns the delivered answer text from a completed handoff:
+// the last result's output, then observations, then content, whichever is set.
+func findHandoffAnswer(h *Handoff) string {
+	if h == nil {
+		return ""
+	}
+	if len(h.Results) > 0 {
+		if out := strings.TrimSpace(h.Results[len(h.Results)-1].Output); out != "" {
+			return out
+		}
+	}
+	if out := strings.TrimSpace(h.Content); out != "" {
+		return out
+	}
+	return strings.TrimSpace(h.Observations)
 }
 
 // lastAssistantContent returns the text content of the most recent assistant
@@ -404,24 +418,8 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	parts = append(parts, "\n## Budget")
 	parts = append(parts, fmt.Sprintf("Token budget: %d", handoff.BudgetTokens))
 
-	parts = append(parts, "\n## Output Format (STRICT - ONLY JSON):")
-	parts = append(parts, "Return ONLY a valid JSON object with the completed handoff structure:")
-	parts = append(parts, "{")
-	parts = append(parts, `  "handoff": {`)
-	parts = append(parts, `    "objective": "...",`)
-	parts = append(parts, `    "instructions": [...],`)
-	parts = append(parts, `    "success_criteria": [...],`)
-	parts = append(parts, `    "context_summary": "...",`)
-	parts = append(parts, `    "allowed_tools": [...],`)
-	parts = append(parts, `    "budget_tokens": 1000,`)
-	parts = append(parts, `    "results": [{"instruction_id": "1", "success": true, "output": "result", "error": "", "duration_ms": 100}],`)
-	parts = append(parts, `    "outcome": "success|partial|failed|ambiguous",`)
-	parts = append(parts, `    "observations": "what happened",`)
-	parts = append(parts, `    "errors": []`)
-	parts = append(parts, `  }`)
-	parts = append(parts, `}`)
-	parts = append(parts, "")
-	parts = append(parts, "CRITICAL: Output ONLY the JSON. No reasoning, no explanations, no extra text!")
+	parts = append(parts, "\n## Final step")
+	parts = append(parts, "After carrying out the steps above, give the user a direct, complete, natural-language answer. Do not describe the tools you used — just answer as if you examined the files yourself.")
 
 	return strings.Join(parts, "\n")
 }

@@ -6526,11 +6526,16 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 	// Emit phase event for TUI
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: starting master-slave loop"})
 
-	// Run the loop
-	err = loop.Run(ctx, userTask)
+	// Run the loop; answer is the final text the slave delivered to the user.
+	answer, err := loop.Run(ctx, userTask)
 	if err != nil {
 		c.sink.Emit(event.Event{Kind: event.Phase, Text: fmt.Sprintf("SplitReason: loop error: %v", err)})
 		return err
+	}
+
+	// Surface the slave's answer to the user visibly.
+	if answer != "" {
+		c.sink.Emit(event.Event{Kind: event.Message, Text: answer})
 	}
 
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: task completed"})
