@@ -234,13 +234,12 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 
 		s.recordHandoff(completedHandoff)
 
-		if answer := findHandoffAnswer(completedHandoff); answer != "" {
-			return answer, nil
-		}
-
+		// The master verifies the work before the loop is allowed to end.
+		// Only a handoff the master judges complete (outcome=success and a
+		// deliverable present) terminates and yields the answer.
 		done, nextInput := s.reviewHandoff(completedHandoff)
 		if done {
-			return "", nil
+			return findHandoffAnswer(completedHandoff), nil
 		}
 		masterInput = nextInput
 	}
@@ -525,15 +524,33 @@ func (s *SplitReasonLoop) reviewHandoff(h *Handoff) (done bool, nextInput string
 	}
 }
 
-// verifySuccessCriteria checks if all success criteria are met based on results
+// verifySuccessCriteria reports whether a completed handoff counts as done.
+// The slave sets Outcome=Success and delivers its final answer as a single
+// result, so we accept it when the outcome is success and an answer (result
+// output, content, or observations) was actually produced — rather than
+// requiring one result per instruction.
 func (s *SplitReasonLoop) verifySuccessCriteria(h *Handoff) bool {
-	// Simple check: all instructions succeeded
+	if h == nil {
+		return false
+	}
+	if h.Outcome != HandoffSuccess {
+		return false
+	}
+	// Any failed result means it isn't done.
 	for _, r := range h.Results {
 		if !r.Success {
 			return false
 		}
 	}
-	return len(h.Results) == len(h.Instructions)
+	// Must have at least one concrete deliverable (answer, content, or observation).
+	if len(h.Results) > 0 {
+		for _, r := range h.Results {
+			if strings.TrimSpace(r.Output) != "" {
+				return true
+			}
+		}
+	}
+	return strings.TrimSpace(h.Content) != "" || strings.TrimSpace(h.Observations) != ""
 }
 
 // createFailedHandoff creates a failed handoff from an error
