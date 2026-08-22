@@ -6460,11 +6460,14 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		RecoveryTaskID:        "",
 	}, c.sink)
 
-	// Create slave agent with a permissive YOLO gate so it can execute tools without blocking
+	// Create slave agent with a permissive YOLO gate and FULL tools (not
+	// read-only). The slave is the one that actually executes the plan, so it
+	// must be able to read, write, edit files, and run shell commands. Using a
+	// read-only registry (as originally done) broke write_file/edit_file/shell.
 	slaveGate := NewSharedHeadlessGate(c.policy, ToolApprovalYolo)
 	slaveSession := agent.NewSession(SlaveSystemPrompt)
-	slaveAgent := agent.New(slaveProv, agent.ReadOnlySubagentToolRegistryForDepthWithRuntime(c.mcp.registry(), nil, 1, c.cfg.Agent.MaxSubagentDepth, c.capabilityRuntime), slaveSession, agent.Options{
-		MaxSteps:              5,
+	slaveAgent := agent.New(slaveProv, c.mcp.registry(), slaveSession, agent.Options{
+		MaxSteps:              30,
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
 		Pricing:               slaveEntry.Price,
@@ -6472,15 +6475,15 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		ModelRef:              slaveModel,
 		RequireVisibleFinal:   true,
 		Gate:                  slaveGate,
-		ReadOnlyExecution:     true,
+		ReadOnlyExecution:     false,
 		PlannerMCPExecution:   false,
 		ContextWindow:         slaveEntry.ContextWindow,
 		CompactRatio:          c.cfg.Agent.CompactRatio,
 		RecentKeep:            c.cfg.Agent.RecentKeep,
 		Hooks:                 c.hooks,
 		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),
-		Jobs:                  nil,
-		Scheduler:             nil,
+		Jobs:                  c.jobs,
+		Scheduler:             c.scheduler,
 		WriteScheduler:        nil,
 		WriteWorkspaceRoot:    c.workspaceRoot,
 		WriteRoots:            c.writeAccess.roots,
