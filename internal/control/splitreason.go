@@ -475,7 +475,7 @@ func extractHandoffOrContextJSON(text string) *Handoff {
 			return &Handoff{Context: parsed.Context}
 		}
 		if parsed.Handoff != nil {
-			return &Handoff{Handoff: parsed.Handoff}
+			return &Handoff{NextHandoff: parsed.Handoff}
 		}
 	}
 	return nil
