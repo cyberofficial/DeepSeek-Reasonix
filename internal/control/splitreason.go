@@ -26,6 +26,9 @@ type Handoff struct {
 	BudgetTokens     int                `json:"budget_tokens"`
 	MasterReasoning  string             `json:"master_reasoning,omitempty"`
 
+	// Context gathering phase (Phase 1) - for accumulating reasoning before planning
+	Context *MasterContext `json:"context,omitempty"`
+
 	// Slave simple response format (for backward compatibility)
 	Type    string `json:"type,omitempty"`
 	Content string `json:"content,omitempty"`
@@ -38,6 +41,18 @@ type Handoff struct {
 
 	// Slave → Master (response) — structured work report (new)
 	WorkReport *WorkReport `json:"work_report,omitempty"`
+
+	// Full handoff (for planning phase) - used when Context is nil but Handoff is present
+	Handoff *Handoff `json:"handoff,omitempty"`
+}
+
+// MasterContext represents the context gathering phase output
+type MasterContext struct {
+	ReasoningAccumulated string   `json:"reasoning_accumulated,omitempty"`
+	FilesExamined        []string `json:"files_examined,omitempty"`
+	CommandsRun          []string `json:"commands_run,omitempty"`
+	KeyFindings          string   `json:"key_findings,omitempty"`
+	ReadyToPlan          bool      `json:"ready_to_plan"`
 }
 
 // WorkReport is the slave's structured completion report to the master.
@@ -81,19 +96,36 @@ const (
 const MasterSystemPrompt = `# MASTER SYSTEM PROMPT (SPLITREASON ARCHITECT)
 
 You are the **Architect** in a master-slave execution loop.
-Your role: HIGH-LEVEL PLANNING AND REASONING + VERIFICATION.
+Your role: CONTEXT GATHERING -> HIGH-LEVEL PLANNING -> VERIFICATION.
 
 ## CRITICAL OUTPUT RULES - VIOLATION = FAILURE:
 - NO TEXT BEFORE { OR AFTER } - NOT EVEN A NEWLINE
-- NO REASONING, NO THINKING, NO ANALYSIS, NO EXPLANATIONS, NO PLANNING TEXT
 - NO MARKDOWN, CODE FENCES, FORMATTING
 - YOUR ENTIRE RESPONSE = ONE JSON OBJECT STARTING WITH { AND ENDING WITH }
 - STOP IMMEDIATELY AFTER THE FINAL } - NO NEWLINE, NO SPACE, NOTHING
 
-## TWO MODES (determined by the user message you receive):
+## THREE PHASES (determined by the user message you receive):
 
-### PLANNING MODE (default):
-You receive a task and must produce a handoff for the slave.
+### PHASE 1: CONTEXT GATHERING (exploration)
+When you need to understand the codebase before planning, YOU HAVE FULL TOOL ACCESS.
+Use read_file, shell, grep, glob, task, MCP tools to explore the codebase.
+After gathering context, output a "context" handoff with accumulated reasoning.
+
+OUTPUT FORMAT (strict JSON):
+{
+  "context": {
+    "reasoning_accumulated": "string - ALL your thinking so far, accumulated across turns",
+    "files_examined": ["paths you read"],
+    "commands_run": ["shell commands you ran"],
+    "key_findings": "string - summary of what you learned",
+    "ready_to_plan": false  // set true when context gathering is done
+  }
+}
+
+### PHASE 2: PLANNING (when ready_to_plan=true or user message says "## Plan for Slave")
+NOW produce the handoff for the slave. Include ALL accumulated reasoning as master_reasoning.
+YOU HAVE FULL TOOL ACCESS during planning too if needed.
+
 OUTPUT FORMAT (strict JSON):
 {
   "handoff": {
@@ -101,19 +133,13 @@ OUTPUT FORMAT (strict JSON):
     "instructions": [{"id": "1", "action": "tool_name", "args": "JSON string", "description": "what slave does"}],
     "success_criteria": ["verifiable condition 1"],
     "context_summary": "why this task, what user wants",
-    "master_reasoning": "string - YOUR REASONING PROCESS FOR THE SLAVE",
+    "master_reasoning": "string - YOUR FULL ACCUMULATED REASONING (from all prior turns) FOR THE SLAVE",
     "allowed_tools": ["tool1", "tool2"],
     "budget_tokens": 1000
   }
 }
 
-IN PLANNING MODE: NEVER CALL TOOLS. ONLY OUTPUT THE HANDOFF JSON.
-
-You MUST include "master_reasoning" with your thinking process.
-The slave will receive this as context to understand your intent.
-Your output MUST be valid JSON. No text outside the JSON object. STOP AFTER }.
-
-### REVIEW MODE (when user message says "## Your Verification Tools"):
+### PHASE 3: REVIEW (when user message says "## Your Verification Tools")
 You are reviewing the slave's completed work. You have FULL TOOL ACCESS.
 Use read_file, shell, grep, glob, task, MCP tools to VERIFY the slave's work.
 Check: re-read files, run tests, git diff, etc. DO NOT TRUST the report blindly.
@@ -126,8 +152,7 @@ OUTPUT FORMAT (strict JSON) - return ONE of these two shapes:
 Never trust the slave's self-reported outcome; decide from the report AND the
 task AND your verification. No text outside the JSON object. STOP AFTER }.
 
-VALID ACTIONS FOR PLANNING MODE (USE EXACTLY THESE NAMES):
-- "delegate_respond" - send message to user (greetings, answers, final output) -- NOT A TOOL, put in results
+VALID ACTIONS FOR PHASE 1 & 2 (USE EXACTLY THESE NAMES):
 - "delegate_read_file" - read a file -> maps to read_file tool
 - "delegate_write_file" - create file -> maps to write_file tool
 - "delegate_edit_file" - edit file -> maps to edit_file tool
@@ -136,15 +161,15 @@ VALID ACTIONS FOR PLANNING MODE (USE EXACTLY THESE NAMES):
 - "delegate_grep" - search text -> maps to grep tool
 - "delegate_glob" - find files -> maps to glob tool
 - "delegate_task" - spawn sub-agent (complex multi-step only)
+- "delegate_respond" - only in planning: send message to user (greetings, answers, final output) -- NOT A TOOL, put in handoff results
 
 VIOLATION = FAILURE:
 - Any text before { or after } -- INCLUDING NEWLINES
-- Any reasoning, thinking, analysis, explanations, planning text
 - Any markdown, code fences, formatting
 - Any action not in the list above
 - USING REAL TOOL NAMES -- USE DELEGATE_ PREFIX INSTEAD
-- "Tell me about X" -> YOU ANSWERING = FAIL. MUST DELEGATE.
-- "Hello" -> YOU READING FILES = FAIL. USE DELEGATE_RESPOND.
+- "Tell me about X" in planning -> YOU ANSWERING = FAIL. MUST DELEGATE via handoff.
+- "Hello" in planning -> YOU READING FILES = FAIL. USE PHASE 1 CONTEXT GATHERING.
 `
 
 const SlaveSystemPrompt = `
@@ -197,14 +222,26 @@ and context (including the Architect's reasoning). For EACH instruction:
 6. YOUR FINAL OUTPUT MUST BE ONLY THE JSON OBJECT. NO TEXT OUTSIDE IT.
 `
 
+type MasterPhase int
+
+const (
+	PhaseContextGathering MasterPhase = iota
+	PhasePlanning
+	PhaseReview
+)
+
 // SplitReasonLoop orchestrates the master-slave execution loop
 type SplitReasonLoop struct {
-	masterController *Controller
-	slaveController  *Controller
-	handoffs         []Handoff
-	maxTurns         int
-	totalBudget      int
-	mu               sync.Mutex
+	masterController      *Controller
+	slaveController       *Controller
+	handoffs              []Handoff
+	maxTurns              int
+	totalBudget           int
+	mu                    sync.Mutex
+	accumulatedReasoning  string
+	phase                 MasterPhase
+	contextFilesExamined  []string
+	contextCommandsRun    []string
 }
 
 const (
@@ -228,6 +265,7 @@ func NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl *Controller) *Split
 // final answer text delivered by the slave once the task is complete, or an
 // error if it never finished.
 func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, error) {
+	s.phase = PhaseContextGathering
 	masterInput := s.buildMasterInput(userTask, nil)
 
 	for turn := 0; turn < s.maxTurns; turn++ {
@@ -237,42 +275,96 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 		default:
 		}
 
-		handoff, err := s.runMasterTurn(ctx, masterInput)
+		handoff, err := s.runMasterTurn(ctx, masterInput, turn)
 		if err != nil {
 			return "", fmt.Errorf("master turn %d failed: %w", turn, err)
 		}
 
+		// Handle context handoff (Phase 1)
+		if handoff.Context != nil {
+			s.accumulateReasoning(handoff)
+			// Check if master is ready to plan
+			if handoff.Context.ReadyToPlan {
+				s.phase = PhasePlanning
+				masterInput = s.buildMasterInput(userTask, handoff)
+			} else {
+				// Continue gathering context
+				masterInput = s.buildMasterInput(userTask, handoff)
+			}
+			continue
+		}
+
+		// Handle planning handoff (Phase 2)
+		if handoff.Handoff != nil {
+			if err := s.validateHandoff(handoff.Handoff); err != nil {
+				masterInput = s.buildMasterInput(userTask, handoff.Handoff, err)
+				continue
+			}
+
+			s.accumulateReasoning(handoff.Handoff)
+			s.recordHandoff(*handoff.Handoff)
+
+			completedHandoff, err := s.runSlaveTurn(ctx, handoff.Handoff)
+			if err != nil {
+				handoff.Handoff.Outcome = HandoffFailed
+				handoff.Handoff.Errors = []string{err.Error()}
+				s.recordHandoff(*handoff.Handoff)
+				masterInput = s.buildMasterInput(userTask, handoff.Handoff)
+				continue
+			}
+
+			s.phase = PhaseReview
+			s.recordHandoff(completedHandoff)
+
+			// The master must VERIFY the slave's work before the loop is allowed to
+			// end. It takes a real review turn over the slave's report.
+			done, nextInput, err := s.runMasterReview(ctx, userTask, completedHandoff)
+			if err != nil {
+				return "", fmt.Errorf("master review turn %d failed: %w", turn, err)
+			}
+			if done {
+				return findHandoffAnswer(completedHandoff), nil
+			}
+			masterInput = nextInput
+			continue
+		}
+
+		// Handle direct context/handoff from validation errors etc.
 		if err := s.validateHandoff(handoff); err != nil {
 			masterInput = s.buildMasterInput(userTask, handoff, err)
 			continue
 		}
 
-		completedHandoff, err := s.runSlaveTurn(ctx, handoff)
-		if err != nil {
-			handoff.Outcome = HandoffFailed
-			handoff.Errors = []string{err.Error()}
-			s.recordHandoff(handoff)
-			masterInput = s.buildMasterInput(userTask, handoff)
-			continue
-		}
-
-		s.recordHandoff(completedHandoff)
-
-		// The master must VERIFY the slave's work before the loop is allowed to
-		// end. It takes a real review turn over the slave's report: either it
-		// accepts (done) and the slave's answer is surfaced, or it issues
-		// corrective follow-up instructions and the loop continues.
-		done, nextInput, err := s.runMasterReview(ctx, userTask, completedHandoff)
-		if err != nil {
-			return "", fmt.Errorf("master review turn %d failed: %w", turn, err)
-		}
-		if done {
-			return findHandoffAnswer(completedHandoff), nil
-		}
-		masterInput = nextInput
+		masterInput = s.buildMasterInput(userTask, handoff)
 	}
 
 	return "", fmt.Errorf("max turns (%d) exceeded", s.maxTurns)
+}
+
+// accumulateReasoning adds the master's reasoning to the accumulated context
+func (s *SplitReasonLoop) accumulateReasoning(h *Handoff) {
+	if h.MasterReasoning != "" {
+		if s.accumulatedReasoning != "" {
+			s.accumulatedReasoning += "\n\n---\n\n" + h.MasterReasoning
+		} else {
+			s.accumulatedReasoning = h.MasterReasoning
+		}
+	}
+	if h.Context != nil {
+		if h.Context.ReasoningAccumulated != "" {
+			if s.accumulatedReasoning != "" {
+				s.accumulatedReasoning += "\n\n---\n\n" + h.Context.ReasoningAccumulated
+			} else {
+				s.accumulatedReasoning = h.Context.ReasoningAccumulated
+			}
+		}
+		for _, f := range h.Context.FilesExamined {
+			s.contextFilesExamined = append(s.contextFilesExamined, f)
+		}
+		for _, c := range h.Context.CommandsRun {
+			s.contextCommandsRun = append(s.contextCommandsRun, c)
+		}
+	}
 }
 
 // findHandoffAnswer returns the delivered answer text from a completed handoff:
@@ -326,31 +418,67 @@ func lastAssistantReasoning(hist []provider.Message) string {
 	return ""
 }
 
-// runMasterTurn runs a single master turn and parses the handoff JSON from the
-// the master's final assistant message in the conversation. It does NOT rely on
-// sink interception (which cannot see the executor's emitted events); it reads
-// the result directly from History() after the synchronous RunTurn returns.
-func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string) (*Handoff, error) {
+// runMasterTurn runs a single master turn and parses the handoff/context JSON
+// from the master's final assistant message. It does NOT rely on sink
+// interception; it reads the result directly from History() after RunTurn.
+func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string, turn int) (*Handoff, error) {
 	if err := s.masterController.RunTurn(ctx, input); err != nil {
 		return nil, err
 	}
 	hist := s.masterController.History()
 	text := lastAssistantContent(hist)
 	if text == "" {
-		return nil, fmt.Errorf("master did not produce a handoff")
+		return nil, fmt.Errorf("master did not produce output")
 	}
-	h := extractHandoffJSON(text)
+	h := extractHandoffOrContextJSON(text)
 	if h == nil {
-		return nil, fmt.Errorf("master did not emit a valid handoff JSON")
+		return nil, fmt.Errorf("master did not emit valid JSON")
 	}
-	// The master's thinking block is the richest, most faithful description of
-	// why it chose these steps. Stash it on the handoff as diluted context for
-	// the slave; fall back to the shorter master_reasoning summary when the
-	// provider didn't emit a separate reasoning block.
+	// Capture reasoning for accumulation
 	if r := lastAssistantReasoning(hist); r != "" {
 		h.MasterReasoning = r
 	}
 	return h, nil
+}
+
+// extractHandoffOrContextJSON parses either a {handoff: {...}} or {context: {...}}
+// JSON object from the master's output.
+func extractHandoffOrContextJSON(text string) *Handoff {
+	// Look for top-level JSON objects with either "handoff" or "context" keys
+	depth := 0
+	start := -1
+	var candidates []string
+	for i, ch := range text {
+		if ch == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		} else if ch == '}' {
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					candidates = append(candidates, text[start:i+1])
+				}
+			}
+		}
+	}
+	for _, c := range candidates {
+		var parsed struct {
+			Context *MasterContext `json:"context"`
+			Handoff *Handoff       `json:"handoff"`
+		}
+		if json.Unmarshal([]byte(c), &parsed) != nil {
+			continue
+		}
+		if parsed.Context != nil {
+			return &Handoff{Context: parsed.Context}
+		}
+		if parsed.Handoff != nil {
+			return &Handoff{Handoff: parsed.Handoff}
+		}
+	}
+	return nil
 }
 
 // runSlaveTurn executes the handoff using the slave controller. After the slave
@@ -424,11 +552,27 @@ func (s *SplitReasonLoop) extractWorkReport(text string) *WorkReport {
 	return nil
 }
 
-// buildMasterInput constructs the input for the master turn
+// buildMasterInput constructs the input for the master turn based on current phase
 func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff, err ...error) string {
 	var parts []string
 	parts = append(parts, "## Task")
 	parts = append(parts, userTask)
+
+	// Always include accumulated reasoning as context for the master
+	if s.accumulatedReasoning != "" {
+		parts = append(parts, "\n## Accumulated Reasoning (from all prior turns)")
+		parts = append(parts, s.accumulatedReasoning)
+	}
+
+	// Include context gathered so far
+	if len(s.contextFilesExamined) > 0 {
+		parts = append(parts, "\n## Files Examined So Far")
+		parts = append(parts, strings.Join(s.contextFilesExamined, ", "))
+	}
+	if len(s.contextCommandsRun) > 0 {
+		parts = append(parts, "\n## Commands Run So Far")
+		parts = append(parts, strings.Join(s.contextCommandsRun, ", "))
+	}
 
 	if len(s.handoffs) > 0 {
 		parts = append(parts, "\n## Handoff History")
@@ -465,9 +609,31 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 
 	if prevHandoff != nil {
 		parts = append(parts, "\n## Previous Handoff Result")
-		parts = append(parts, "Outcome: "+string(prevHandoff.Outcome))
-		if prevHandoff.WorkReport != nil {
+		if prevHandoff.Context != nil {
+			ctx := prevHandoff.Context
+			parts = append(parts, "Context Gathering Phase Complete")
+			if ctx.ReadyToPlan {
+				parts = append(parts, "Status: READY TO PLAN")
+			} else {
+				parts = append(parts, "Status: STILL GATHERING CONTEXT")
+			}
+			if ctx.ReasoningAccumulated != "" {
+				parts = append(parts, "Reasoning from this turn: "+ctx.ReasoningAccumulated)
+			}
+			if ctx.KeyFindings != "" {
+				parts = append(parts, "Key Findings: "+ctx.KeyFindings)
+			}
+			if len(ctx.FilesExamined) > 0 {
+				parts = append(parts, "Files Examined This Turn: "+strings.Join(ctx.FilesExamined, ", "))
+			}
+			if len(ctx.CommandsRun) > 0 {
+				parts = append(parts, "Commands Run This Turn: "+strings.Join(ctx.CommandsRun, ", "))
+			}
+		} else if prevHandoff.Handoff != nil {
+			parts = append(parts, "Planning Phase - Handoff Produced")
+		} else if prevHandoff.WorkReport != nil {
 			wr := prevHandoff.WorkReport
+			parts = append(parts, "Slave execution completed")
 			if len(wr.FilesRead) > 0 {
 				parts = append(parts, "Files Read: "+strings.Join(wr.FilesRead, ", "))
 			}
@@ -484,7 +650,7 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 				parts = append(parts, "Summary: "+wr.Summary)
 			}
 			if wr.Answer != "" {
-				parts = append(parts, "User Answer: "+wr.Answer)
+				parts = append(parts, "Proposed Answer: "+wr.Answer)
 			}
 		} else if prevHandoff.Observations != "" {
 			parts = append(parts, "Observations: "+prevHandoff.Observations)
@@ -499,8 +665,28 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 		parts = append(parts, "Fix your JSON output: "+err[0].Error())
 	}
 
+	// Phase-specific instructions
 	parts = append(parts, "\n## Instructions")
-	parts = append(parts, "Return ONLY a JSON object with a \"handoff\" field containing the handoff structure. No extra text.")
+	switch s.phase {
+	case PhaseContextGathering:
+		parts = append(parts, "You are in CONTEXT GATHERING PHASE. Explore the codebase using tools (read_file, shell, grep, glob, task, MCP) to understand the task.")
+		parts = append(parts, "Output ONLY a JSON object with a \"context\" field containing your accumulated reasoning.")
+		parts = append(parts, "Set \"ready_to_plan\": true when you have enough context to create a plan for the slave.")
+		parts = append(parts, "Format: {\"context\": {\"reasoning_accumulated\": \"...\", \"files_examined\": [...], \"commands_run\": [...], \"key_findings\": \"...\", \"ready_to_plan\": true/false}}")
+		parts = append(parts, "NO TEXT OUTSIDE THE JSON OBJECT. STOP AFTER THE FINAL }.")
+	case PhasePlanning:
+		parts = append(parts, "You are in PLANNING PHASE. Create a handoff for the slave using ALL accumulated reasoning above.")
+		parts = append(parts, "Output ONLY a JSON object with a \"handoff\" field containing the structured handoff.")
+		parts = append(parts, "Include ALL accumulated reasoning in the \"master_reasoning\" field so the slave understands the full context.")
+		parts = append(parts, "Format: {\"handoff\": {\"objective\": \"...\", \"instructions\": [...], \"success_criteria\": [...], \"context_summary\": \"...\", \"master_reasoning\": \"ALL ACCUMULATED REASONING\", \"allowed_tools\": [...], \"budget_tokens\": 1000}}")
+		parts = append(parts, "NO TEXT OUTSIDE THE JSON OBJECT. STOP AFTER THE FINAL }.")
+	case PhaseReview:
+		parts = append(parts, "You are in REVIEW PHASE. The slave has completed execution. Verify the work using tools.")
+		parts = append(parts, "Return ONLY a JSON object with ONE of these two shapes:")
+		parts = append(parts, `ACCEPT (work is complete): {"done": true, "notes": "<what you verified against each criterion>"}`)
+		parts = append(parts, `REJECT (work needs fixes): {"done": false, "handoff": {<a fresh handoff with corrective/follow-up instructions, including "master_reasoning">}}`)
+		parts = append(parts, "No text outside the JSON object. STOP AFTER THE FINAL }.")
+	}
 
 	return strings.Join(parts, "\n")
 }
