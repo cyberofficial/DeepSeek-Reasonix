@@ -170,6 +170,15 @@ you MUST output a JSON object with a "work_report" field containing your structu
   }
 }
 
+## Environment
+You are running on Windows. The shell tool executes PowerShell commands.
+Use PowerShell cmdlets (Get-ChildItem, Select-Object, Test-Path, etc.) instead of Unix commands (ls, find, grep, etc.).
+Examples:
+- List files: Get-ChildItem -Force (not ls -la)
+- Find files: Get-ChildItem -Recurse -Include *.go | Select-Object -First 50 (not find)
+- Check existence: Test-Path path/to/file (not test -f)
+- Read file: Get-Content path/to/file (not cat)
+
 ## How to behave
 1. Follow the instructions in order, respecting their dependencies.
 2. Use the tool described by each step's "Action" field with the "Args" as
@@ -843,6 +852,30 @@ func (s *SplitReasonLoop) Close() {
 	if s.slaveController != nil {
 		s.slaveController.Close()
 	}
+}
+
+// filteredSink wraps a sink to suppress Message events from internal loop
+// controllers while passing through Phase, Reasoning, Usage, etc. for UX and History.
+type filteredSink struct {
+	event.Sink
+}
+
+func (f *filteredSink) Emit(e event.Event) {
+	// Suppress internal Message events (master's JSON verdict, slave's WorkReport)
+	// but allow all other event kinds for proper UX rendering and history.
+	if e.Kind == event.Message {
+		return
+	}
+	if f.Sink != nil {
+		f.Sink.Emit(e)
+	}
+}
+
+// NewFilteredSink creates a sink wrapper that suppresses Message events.
+// Use for internal loop controllers (master/slave) to prevent their
+// JSON outputs from reaching the user directly.
+func NewFilteredSink(base event.Sink) event.Sink {
+	return &filteredSink{base}
 }
 
 // extractHandoffJSON attempts to extract a valid Handoff from JSON embedded in text.
