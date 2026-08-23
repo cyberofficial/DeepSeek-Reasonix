@@ -43,7 +43,7 @@ type Handoff struct {
 	WorkReport *WorkReport `json:"work_report,omitempty"`
 
 	// Full handoff (for planning phase) - used when Context is nil but Handoff is present
-	Handoff *Handoff `json:"handoff,omitempty"`
+	NextHandoff *Handoff `json:"handoff,omitempty"`
 }
 
 // MasterContext represents the context gathering phase output
@@ -295,21 +295,21 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 		}
 
 		// Handle planning handoff (Phase 2)
-		if handoff.Handoff != nil {
-			if err := s.validateHandoff(handoff.Handoff); err != nil {
-				masterInput = s.buildMasterInput(userTask, handoff.Handoff, err)
+		if handoff.NextHandoff != nil {
+			if err := s.validateHandoff(handoff.NextHandoff); err != nil {
+				masterInput = s.buildMasterInput(userTask, handoff.NextHandoff, err)
 				continue
 			}
 
-			s.accumulateReasoning(handoff.Handoff)
-			s.recordHandoff(*handoff.Handoff)
+			s.accumulateReasoning(handoff.NextHandoff)
+			s.recordHandoff(handoff.NextHandoff)
 
-			completedHandoff, err := s.runSlaveTurn(ctx, handoff.Handoff)
+			completedHandoff, err := s.runSlaveTurn(ctx, handoff.NextHandoff)
 			if err != nil {
-				handoff.Handoff.Outcome = HandoffFailed
-				handoff.Handoff.Errors = []string{err.Error()}
-				s.recordHandoff(*handoff.Handoff)
-				masterInput = s.buildMasterInput(userTask, handoff.Handoff)
+				handoff.NextHandoff.Outcome = HandoffFailed
+				handoff.NextHandoff.Errors = []string{err.Error()}
+				s.recordHandoff(handoff.NextHandoff)
+				masterInput = s.buildMasterInput(userTask, handoff.NextHandoff)
 				continue
 			}
 
@@ -629,7 +629,7 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 			if len(ctx.CommandsRun) > 0 {
 				parts = append(parts, "Commands Run This Turn: "+strings.Join(ctx.CommandsRun, ", "))
 			}
-		} else if prevHandoff.Handoff != nil {
+		} else if prevHandoff.NextHandoff != nil {
 			parts = append(parts, "Planning Phase - Handoff Produced")
 		} else if prevHandoff.WorkReport != nil {
 			wr := prevHandoff.WorkReport
