@@ -30,11 +30,24 @@ type Handoff struct {
 	Type    string `json:"type,omitempty"`
 	Content string `json:"content,omitempty"`
 
-	// Slave → Master (response)
+	// Slave → Master (response) — legacy fields
 	Results     []InstructionResult `json:"results,omitempty"`
 	Outcome     HandoffOutcome      `json:"outcome,omitempty"`
 	Observations string            `json:"observations,omitempty"`
 	Errors      []string            `json:"errors,omitempty"`
+
+	// Slave → Master (response) — structured work report (new)
+	WorkReport *WorkReport `json:"work_report,omitempty"`
+}
+
+// WorkReport is the slave's structured completion report to the master.
+type WorkReport struct {
+	FilesRead     []string `json:"files_read,omitempty"`      // paths read
+	FilesWritten  []string `json:"files_written,omitempty"`   // paths created
+	FilesEdited   []string `json:"files_edited,omitempty"`    // paths modified
+	CommandsRun   []string `json:"commands_run,omitempty"`    // shell commands executed
+	Summary       string   `json:"summary"`                   // brief narrative of what was done
+	Answer        string   `json:"answer,omitempty"`          // the user-facing answer (only if final)
 }
 
 type Instruction struct {
@@ -56,10 +69,10 @@ type InstructionResult struct {
 type HandoffOutcome string
 
 const (
-	HandoffSuccess     HandoffOutcome = "success"
-	HandoffPartial     HandoffOutcome = "partial"
-	HandoffFailed      HandoffOutcome = "failed"
-	HandoffAmbiguous   HandoffOutcome = "ambiguous"
+	HandoffSuccess   HandoffOutcome = "success"   // work complete, awaiting master review
+	HandoffPartial   HandoffOutcome = "partial"   // some steps done, more needed
+	HandoffFailed    HandoffOutcome = "failed"    // error occurred
+	HandoffAmbiguous HandoffOutcome = "ambiguous" // needs clarification
 )
 
 // Master and Slave system prompts
@@ -67,17 +80,21 @@ const (
 
 const MasterSystemPrompt = `# MASTER SYSTEM PROMPT (SPLITREASON ARCHITECT)
 
-You are the **Architect** in a master–slave execution loop.
-Your role: HIGH-LEVEL PLANNING AND REASONING. You do NOT execute tools.
+You are the **Architect** in a master-slave execution loop.
+Your role: HIGH-LEVEL PLANNING AND REASONING + VERIFICATION.
 
-## ⛔ CRITICAL OUTPUT RULES — VIOLATION = FAILURE:
-❌ NO TEXT BEFORE { OR AFTER } — NOT EVEN A NEWLINE
-❌ NO REASONING, NO THINKING, NO ANALYSIS, NO EXPLANATIONS, NO PLANNING TEXT
-❌ NO MARKDOWN, CODE FENCES, FORMATTING
-✅ YOUR ENTIRE RESPONSE = ONE JSON OBJECT STARTING WITH { AND ENDING WITH }
-✅ STOP IMMEDIATELY AFTER THE FINAL } — NO NEWLINE, NO SPACE, NOTHING
+## CRITICAL OUTPUT RULES - VIOLATION = FAILURE:
+- NO TEXT BEFORE { OR AFTER } - NOT EVEN A NEWLINE
+- NO REASONING, NO THINKING, NO ANALYSIS, NO EXPLANATIONS, NO PLANNING TEXT
+- NO MARKDOWN, CODE FENCES, FORMATTING
+- YOUR ENTIRE RESPONSE = ONE JSON OBJECT STARTING WITH { AND ENDING WITH }
+- STOP IMMEDIATELY AFTER THE FINAL } - NO NEWLINE, NO SPACE, NOTHING
 
-## OUTPUT FORMAT (strict JSON):
+## TWO MODES (determined by the user message you receive):
+
+### PLANNING MODE (default):
+You receive a task and must produce a handoff for the slave.
+OUTPUT FORMAT (strict JSON):
 {
   "handoff": {
     "objective": "string - what slave must accomplish",
@@ -90,97 +107,79 @@ Your role: HIGH-LEVEL PLANNING AND REASONING. You do NOT execute tools.
   }
 }
 
+IN PLANNING MODE: NEVER CALL TOOLS. ONLY OUTPUT THE HANDOFF JSON.
+
 You MUST include "master_reasoning" with your thinking process.
 The slave will receive this as context to understand your intent.
 Your output MUST be valid JSON. No text outside the JSON object. STOP AFTER }.
 
-## REVIEW MODE — when asked to review the slave's completed work:
-Your role switches from planner to VERIFIER. Judge the work against the success
-criteria. Return ONLY ONE JSON object using one of these two shapes:
+### REVIEW MODE (when user message says "## Your Verification Tools"):
+You are reviewing the slave's completed work. You have FULL TOOL ACCESS.
+Use read_file, shell, grep, glob, task, MCP tools to VERIFY the slave's work.
+Check: re-read files, run tests, git diff, etc. DO NOT TRUST the report blindly.
+
+OUTPUT FORMAT (strict JSON) - return ONE of these two shapes:
 - Work done: {"done": true, "notes": "<what you verified against each criterion>"}
 - Work incomplete/flawed: {"done": false, "handoff": {<a fresh handoff with
   corrective or follow-up instructions, including "master_reasoning">}}
 
 Never trust the slave's self-reported outcome; decide from the report AND the
-task. No text outside the JSON object. STOP AFTER }.
+task AND your verification. No text outside the JSON object. STOP AFTER }.
 
-PATTERNS:
-
-USER: "Hello" / "Hi" / "Hey"
-{"handoff":{"objective":"Greet user","instructions":[{"id":"1","action":"delegate_respond","args":"{\"message\":\"Hello! How can I help?\"}","description":"Greet"}],"success_criteria":["User greeted"],"context_summary":"User greeted","master_reasoning":"Simple greeting - respond politely without file ops","allowed_tools":["respond"],"budget_tokens":500}}
-
-USER: "Tell me about X" / "What is X" / "Explain X" / "Describe X"
-{
-  "handoff": {
-    "objective": "Answer user question about repository",
-    "instructions": [
-      {"id": "1", "action": "delegate_read_file", "args": "{\"path\": \"REASONIX.md\"}", "description": "Read project memory", "depends_on": []},
-      {"id": "2", "action": "delegate_read_file", "args": "{\"path\": \"README.md\"}", "description": "Read project overview", "depends_on": ["1"]},
-      {"id": "3", "action": "delegate_respond", "args": "{\"message\": \"This repository is...\"}", "description": "Deliver answer", "depends_on": ["1", "2"]}
-    ],
-    "success_criteria": ["Files read", "Answer delivered"],
-    "context_summary": "User asked about repo. Slave reads files then answers.",
-    "master_reasoning": "User asked about the repo. I need the slave to read REASONIX.md for memory and README.md for overview, then compile an answer.",
-    "allowed_tools": ["read_file", "respond"],
-    "budget_tokens": 2000
-  }
-}
-
-USER: "Add function" / "Fix bug" / "Refactor X"
-{
-  "handoff": {
-    "objective": "Implement code change",
-    "instructions": [
-      {"id": "1", "action": "delegate_read_file", "args": "{\"path\": \"path/to/file\"}", "description": "Read target file", "depends_on": []},
-      {"id": "2", "action": "delegate_edit_file", "args": "{\"path\": \"path/to/file\", \"old_text\": \"...\", \"new_text\": \"...\"}", "description": "Make change", "depends_on": ["1"]},
-      {"id": "3", "action": "delegate_shell", "args": "{\"command\": \"go build ./...\"}", "description": "Verify build", "depends_on": ["2"]}
-    ],
-    "success_criteria": ["Changes compile", "Tests pass"], "context_summary": "Code change requested", "master_reasoning": "Code change requested. Slave reads file, makes edit, verifies build.", "allowed_tools": ["read_file", "edit_file", "shell"], "budget_tokens": 8000
-  }
-}
-
-VALID ACTIONS (USE EXACTLY THESE NAMES):
-- "delegate_respond" - send message to user (greetings, answers, final output) — NOT A TOOL, put in results
-- "delegate_read_file" - read a file → maps to read_file tool
-- "delegate_write_file" - create file → maps to write_file tool
-- "delegate_edit_file" - edit file → maps to edit_file tool
-- "delegate_multiedit" - batch edit file → maps to multiedit tool
-- "delegate_shell" - run command → maps to shell tool
-- "delegate_grep" - search text → maps to grep tool
-- "delegate_glob" - find files → maps to glob tool
+VALID ACTIONS FOR PLANNING MODE (USE EXACTLY THESE NAMES):
+- "delegate_respond" - send message to user (greetings, answers, final output) -- NOT A TOOL, put in results
+- "delegate_read_file" - read a file -> maps to read_file tool
+- "delegate_write_file" - create file -> maps to write_file tool
+- "delegate_edit_file" - edit file -> maps to edit_file tool
+- "delegate_multiedit" - batch edit file -> maps to multiedit tool
+- "delegate_shell" - run command -> maps to shell tool
+- "delegate_grep" - search text -> maps to grep tool
+- "delegate_glob" - find files -> maps to glob tool
 - "delegate_task" - spawn sub-agent (complex multi-step only)
 
-❌ VIOLATION = FAILURE:
-❌ Any text before { or after } — INCLUDING NEWLINES
-❌ Any reasoning, thinking, analysis, explanations, planning text
-❌ Any markdown, code fences, formatting
-❌ Any action not in the list above
-❌ USING REAL TOOL NAMES — USE DELEGATE_ PREFIX INSTEAD
-❌ "Tell me about X" → YOU ANSWERING = FAIL. MUST DELEGATE.
-❌ "Hello" → YOU READING FILES = FAIL. USE DELEGATE_RESPOND.
+VIOLATION = FAILURE:
+- Any text before { or after } -- INCLUDING NEWLINES
+- Any reasoning, thinking, analysis, explanations, planning text
+- Any markdown, code fences, formatting
+- Any action not in the list above
+- USING REAL TOOL NAMES -- USE DELEGATE_ PREFIX INSTEAD
+- "Tell me about X" -> YOU ANSWERING = FAIL. MUST DELEGATE.
+- "Hello" -> YOU READING FILES = FAIL. USE DELEGATE_RESPOND.
 `
 
 const SlaveSystemPrompt = `
-
-You are the **Executor** in a master–slave execution loop.
-Your role: EXECUTE the instructions from the Architect, then answer the user.
+You are the **Executor** in a master-slave execution loop.
+Your role: EXECUTE the instructions from the Architect, then produce a structured WORK REPORT for the master to verify.
 
 ## Task
 You are given an objective, some instructions describing steps to perform,
 and context (including the Architect's reasoning). Carry out the steps using
 the tools available to you (read_file, write_file, edit_file, multiedit,
-shell, grep, glob, task), then report the result to the user in a clear,
-concise, natural-language answer.
+shell, grep, glob, task). DO NOT answer the user directly. Instead, at the end,
+you MUST output a JSON object with a "work_report" field containing your structured report.
+
+## Output Format (STRICT -- only JSON, no extra text):
+{
+  "work_report": {
+    "files_read": ["path1", "path2"],
+    "files_written": ["path3"],
+    "files_edited": ["path4"],
+    "commands_run": ["cmd1", "cmd2"],
+    "summary": "Brief narrative of what was accomplished",
+    "answer": "Final user-facing answer (if this completes the task)"
+  }
+}
 
 ## How to behave
 1. Follow the instructions in order, respecting their dependencies.
 2. Use the tool described by each step's "Action" field with the "Args" as
-   its arguments. "respond" means: that step is where you produce the final
-   answer for the user.
-3. If a step fails, report what happened and what you tried, and whether the
-   work is complete.
-4. Once you have the information, give the user a complete answer directly
-   (this is your final response).
+   its arguments.
+3. Track every file you read, write, edit, and every shell command you run.
+4. If a step fails, include the error in your work_report summary.
+5. After completing all instructions, output ONLY the JSON above. The master
+   will verify your work report and decide whether to continue or deliver the
+   answer to the user.
+6. YOUR FINAL OUTPUT MUST BE ONLY THE JSON OBJECT. NO TEXT OUTSIDE IT.
 `
 
 // SplitReasonLoop orchestrates the master-slave execution loop
@@ -262,10 +261,13 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 }
 
 // findHandoffAnswer returns the delivered answer text from a completed handoff:
-// the last result's output, then observations, then content, whichever is set.
+// prefer WorkReport.answer, then fall back to legacy fields.
 func findHandoffAnswer(h *Handoff) string {
 	if h == nil {
 		return ""
+	}
+	if h.WorkReport != nil && strings.TrimSpace(h.WorkReport.Answer) != "" {
+		return strings.TrimSpace(h.WorkReport.Answer)
 	}
 	if len(h.Results) > 0 {
 		if out := strings.TrimSpace(h.Results[len(h.Results)-1].Output); out != "" {
@@ -337,9 +339,8 @@ func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string) (*Han
 }
 
 // runSlaveTurn executes the handoff using the slave controller. After the slave
-// runs (executing its tools and answering), it reads the slave's final text
-// answer from History() and wraps it into a completed handoff. No strict JSON
-// is required of the slave — its natural-language answer becomes the result.
+// runs (executing its tools), it outputs a structured WorkReport JSON. This
+// function parses that report and wraps it into a completed handoff.
 func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*Handoff, error) {
 	slaveInput := s.buildSlaveInput(handoff)
 
@@ -348,7 +349,20 @@ func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*
 		return s.createFailedHandoff(handoff, runErr), nil
 	}
 
-	answer := lastAssistantContent(s.slaveController.History())
+	hist := s.slaveController.History()
+	text := lastAssistantContent(hist)
+	if text == "" {
+		return s.createFailedHandoff(handoff, fmt.Errorf("slave produced no output")), nil
+	}
+
+	workReport := s.extractWorkReport(text)
+	if workReport == nil {
+		// Fallback: wrap the raw text as a basic work report with answer
+		workReport = &WorkReport{
+			Summary: "Slave completed work (raw output captured)",
+			Answer:  text,
+		}
+	}
 
 	completed := &Handoff{
 		Objective:       handoff.Objective,
@@ -358,20 +372,41 @@ func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*
 		AllowedTools:    handoff.AllowedTools,
 		BudgetTokens:    handoff.BudgetTokens,
 		Outcome:         HandoffSuccess,
-	}
-
-	if answer != "" {
-		completed.Results = []InstructionResult{{
-			InstructionID: "final",
-			Success:       true,
-			Output:        answer,
-		}}
-		completed.Observations = "Slave executed the handoff and delivered the answer"
-	} else if ctx.Err() != nil {
-		completed.Outcome = HandoffFailed
-		completed.Errors = []string{ctx.Err().Error()}
+		WorkReport:      workReport,
 	}
 	return completed, nil
+}
+
+// extractWorkReport parses the slave's output JSON to extract the work_report.
+func (s *SplitReasonLoop) extractWorkReport(text string) *WorkReport {
+	// Find JSON with "work_report" field
+	depth := 0
+	start := -1
+	var candidates []string
+	for i, ch := range text {
+		if ch == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		} else if ch == '}' {
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					candidates = append(candidates, text[start:i+1])
+				}
+			}
+		}
+	}
+	for _, c := range candidates {
+		var parsed struct {
+			WorkReport *WorkReport `json:"work_report"`
+		}
+		if json.Unmarshal([]byte(c), &parsed) == nil && parsed.WorkReport != nil {
+			return parsed.WorkReport
+		}
+	}
+	return nil
 }
 
 // buildMasterInput constructs the input for the master turn
@@ -384,7 +419,27 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 		parts = append(parts, "\n## Handoff History")
 		for i, h := range s.handoffs {
 			parts = append(parts, fmt.Sprintf("\n### Handoff %d (outcome: %s)", i+1, h.Outcome))
-			if h.Observations != "" {
+			if h.WorkReport != nil {
+				wr := h.WorkReport
+				if len(wr.FilesRead) > 0 {
+					parts = append(parts, "Files Read: "+strings.Join(wr.FilesRead, ", "))
+				}
+				if len(wr.FilesWritten) > 0 {
+					parts = append(parts, "Files Written: "+strings.Join(wr.FilesWritten, ", "))
+				}
+				if len(wr.FilesEdited) > 0 {
+					parts = append(parts, "Files Edited: "+strings.Join(wr.FilesEdited, ", "))
+				}
+				if len(wr.CommandsRun) > 0 {
+					parts = append(parts, "Commands Run: "+strings.Join(wr.CommandsRun, ", "))
+				}
+				if wr.Summary != "" {
+					parts = append(parts, "Summary: "+wr.Summary)
+				}
+				if wr.Answer != "" {
+					parts = append(parts, "User Answer: "+wr.Answer)
+				}
+			} else if h.Observations != "" {
 				parts = append(parts, "Observations: "+h.Observations)
 			}
 			if len(h.Errors) > 0 {
@@ -396,7 +451,27 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 	if prevHandoff != nil {
 		parts = append(parts, "\n## Previous Handoff Result")
 		parts = append(parts, "Outcome: "+string(prevHandoff.Outcome))
-		if prevHandoff.Observations != "" {
+		if prevHandoff.WorkReport != nil {
+			wr := prevHandoff.WorkReport
+			if len(wr.FilesRead) > 0 {
+				parts = append(parts, "Files Read: "+strings.Join(wr.FilesRead, ", "))
+			}
+			if len(wr.FilesWritten) > 0 {
+				parts = append(parts, "Files Written: "+strings.Join(wr.FilesWritten, ", "))
+			}
+			if len(wr.FilesEdited) > 0 {
+				parts = append(parts, "Files Edited: "+strings.Join(wr.FilesEdited, ", "))
+			}
+			if len(wr.CommandsRun) > 0 {
+				parts = append(parts, "Commands Run: "+strings.Join(wr.CommandsRun, ", "))
+			}
+			if wr.Summary != "" {
+				parts = append(parts, "Summary: "+wr.Summary)
+			}
+			if wr.Answer != "" {
+				parts = append(parts, "User Answer: "+wr.Answer)
+			}
+		} else if prevHandoff.Observations != "" {
 			parts = append(parts, "Observations: "+prevHandoff.Observations)
 		}
 		if len(prevHandoff.Errors) > 0 {
@@ -469,8 +544,18 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	parts = append(parts, "\n## Budget")
 	parts = append(parts, fmt.Sprintf("Token budget: %d", handoff.BudgetTokens))
 
-	parts = append(parts, "\n## Final step")
-	parts = append(parts, "After carrying out the steps above, give the user a direct, complete, natural-language answer. Do not describe the tools you used — just answer as if you examined the files yourself.")
+	parts = append(parts, "\n## Output Format (REQUIRED -- output ONLY this JSON):")
+	parts = append(parts, "{")
+	parts = append(parts, "  \"work_report\": {")
+	parts = append(parts, "    \"files_read\": [\"paths you read\"],")
+	parts = append(parts, "    \"files_written\": [\"paths you created\"],")
+	parts = append(parts, "    \"files_edited\": [\"paths you modified\"],")
+	parts = append(parts, "    \"commands_run\": [\"shell commands you ran\"],")
+	parts = append(parts, "    \"summary\": \"brief narrative of what was accomplished\",")
+	parts = append(parts, "    \"answer\": \"final user-facing answer if task is complete\"")
+	parts = append(parts, "  }")
+	parts = append(parts, "}")
+	parts = append(parts, "NO TEXT OUTSIDE THE JSON OBJECT. STOP AFTER THE FINAL }.")
 
 	return strings.Join(parts, "\n")
 }
@@ -562,8 +647,9 @@ func (s *SplitReasonLoop) validateHandoff(h *Handoff) error {
 
 // reviewInput builds the master's review-turn prompt over a completed handoff.
 // It lays out the task, the success criteria the work owed, and the slave's
-// report (outcome, observations, per-result output, errors), then asks the
-// master to judge against the criteria — not to trust the slave's self-label.
+// structured WorkReport (files read/written/edited, commands run, summary, answer).
+// The master can now USE TOOLS (read_file, shell, grep, glob, task, MCP tools) to
+// VERIFY the work before deciding. It returns a verdict JSON or a follow-up handoff.
 func (s *SplitReasonLoop) reviewInput(userTask string, completed *Handoff) string {
 	var parts []string
 	parts = append(parts, "## Task")
@@ -580,31 +666,46 @@ func (s *SplitReasonLoop) reviewInput(userTask string, completed *Handoff) strin
 				parts = append(parts, fmt.Sprintf("%d. %s", i+1, c))
 			}
 		}
-		parts = append(parts, "\n## Slave's Report")
-		parts = append(parts, "Reported outcome: "+string(completed.Outcome))
-		if completed.Observations != "" {
+		parts = append(parts, "\n## Slave's Work Report")
+		if completed.WorkReport != nil {
+			wr := completed.WorkReport
+			if len(wr.FilesRead) > 0 {
+				parts = append(parts, "Files Read: "+strings.Join(wr.FilesRead, ", "))
+			}
+			if len(wr.FilesWritten) > 0 {
+				parts = append(parts, "Files Written: "+strings.Join(wr.FilesWritten, ", "))
+			}
+			if len(wr.FilesEdited) > 0 {
+				parts = append(parts, "Files Edited: "+strings.Join(wr.FilesEdited, ", "))
+			}
+			if len(wr.CommandsRun) > 0 {
+				parts = append(parts, "Commands Run: "+strings.Join(wr.CommandsRun, ", "))
+			}
+			if wr.Summary != "" {
+				parts = append(parts, "Summary: "+wr.Summary)
+			}
+			if wr.Answer != "" {
+				parts = append(parts, "Proposed User Answer: "+wr.Answer)
+			}
+		} else if completed.Observations != "" {
 			parts = append(parts, "Observations: "+completed.Observations)
-		}
-		for i, r := range completed.Results {
-			if r.Output != "" {
-				parts = append(parts, fmt.Sprintf("Result %d: %s", i+1, r.Output))
-			}
-			if r.Error != "" {
-				parts = append(parts, fmt.Sprintf("Result %d error: %s", i+1, r.Error))
-			}
 		}
 		if len(completed.Errors) > 0 {
 			parts = append(parts, "Errors: "+strings.Join(completed.Errors, "; "))
 		}
 	}
 
+	parts = append(parts, "\n## Your Verification Tools")
+	parts = append(parts, "You have FULL TOOL ACCESS (read_file, write_file, edit_file, shell, grep, glob, task, MCP tools).")
+	parts = append(parts, "USE THEM to verify the slave's work: re-read files, run commands, check git diff, etc.")
+	parts = append(parts, "Do NOT trust the slave's report blindly -- VERIFY.")
+
 	parts = append(parts, "\n## Instructions")
-	parts = append(parts, "You are reviewing work your slave just performed. Judge it against the success criteria above using the slave's report AND what you know about the task.")
-	parts = append(parts, "Return ONLY a JSON object.")
-	parts = append(parts, "If the success criteria are met, return {\"done\": true, \"notes\": \"<what was verified>\"}.")
-	parts = append(parts, "If the work is incomplete or flawed, return {\"done\": false, \"handoff\": {<a fresh handoff with corrective/follow-up instructions>}}.")
-	parts = append(parts, "Include \"master_reasoning\" in the follow-up handoff explaining the gaps you found.")
-	parts = append(parts, "No text outside the JSON object.")
+	parts = append(parts, "You are reviewing work your slave just performed. Judge it against the success criteria above.")
+	parts = append(parts, "Return ONLY a JSON object with ONE of these two shapes:")
+	parts = append(parts, `ACCEPT (work is complete): {"done": true, "notes": "<what you verified against each criterion>"}`)
+	parts = append(parts, `REJECT (work needs fixes): {"done": false, "handoff": {<a fresh handoff with corrective/follow-up instructions, including "master_reasoning">}}`)
+	parts = append(parts, "No text outside the JSON object. STOP AFTER THE FINAL }.")
 
 	return strings.Join(parts, "\n")
 }

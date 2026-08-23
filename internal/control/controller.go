@@ -6440,12 +6440,12 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	}
 
 	// Create master agent with session containing MasterSystemPrompt.
-	// Use an EMPTY registry: the master must NEVER make tool calls. It only
-	// outputs the handoff JSON as a final text answer. Any tool registry would
-	// let the provider parse the handoff's "action" fields as tool calls, which
-	// makes the agent loop forever instead of ending the turn.
+	// Give it FULL tools (not empty) so it can VERIFY the slave's work during
+	// review turns (read_file, shell, grep, glob, MCP, etc.). The MasterSystemPrompt
+	// strictly instructs it to NEVER call tools during planning — only output handoff
+	// JSON. During review turns, the prompt explicitly authorizes tool use for verification.
 	masterSession := agent.NewSession(MasterSystemPrompt)
-	masterAgent := agent.New(masterProv, tool.NewRegistry(), masterSession, agent.Options{
+	masterAgent := agent.New(masterProv, c.mcp.registry(), masterSession, agent.Options{
 		MaxSteps:              10,
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
