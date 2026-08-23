@@ -299,9 +299,10 @@ type Controller struct {
 	// runs — so the run loop's session reference cannot change under it.
 	rotating         bool
 	autosaveWG     sync.WaitGroup
-	planMode       bool
-	splitReasonMode bool
-	sessionPath string
+	planMode            bool
+	splitReasonMode   bool
+	splitReasonLoop   *SplitReasonLoop
+	sessionPath       string
 	// sessionTemp owns the logical-session private temporary directory shared
 	// by Bash calls. Retained for this Controller's lifetime; rotated on
 	// /new, /clear, resume of another session, and branch switches.
@@ -2777,6 +2778,10 @@ func (c *Controller) SplitReasonMode() bool {
 func (c *Controller) SetSplitReasonMode(v bool) {
 	c.mu.Lock()
 	c.splitReasonMode = v
+	if !v && c.splitReasonLoop != nil {
+		c.splitReasonLoop.Close()
+		c.splitReasonLoop = nil
+	}
 	c.mu.Unlock()
 	// The executor doesn't need to know about splitreason mode directly;
 	// the loop is orchestrated at the controller level.
@@ -3060,6 +3065,10 @@ func (c *Controller) NewSession() error {
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(freshPath)
 	c.resetRecoveryForNewSession(freshPath)
+	if c.splitReasonLoop != nil {
+		c.splitReasonLoop.Close()
+		c.splitReasonLoop = nil
+	}
 	c.rotateSessionTemp()
 	c.snapshotMu.Unlock()
 	// Old session keeps its inbox (paused); the fresh session starts empty.
@@ -3160,6 +3169,10 @@ func (c *Controller) ClearSession() error {
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(freshPath)
 	c.resetRecoveryForNewSession(freshPath)
+	if c.splitReasonLoop != nil {
+		c.splitReasonLoop.Close()
+		c.splitReasonLoop = nil
+	}
 	c.rotateSessionTemp()
 	c.snapshotMu.Unlock()
 	c.rebindInbox()
@@ -5569,6 +5582,11 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 		if c.cleanup != nil {
 			c.cleanup()
 		}
+		// Close any cached splitreason loop
+		if c.splitReasonLoop != nil {
+			c.splitReasonLoop.Close()
+			c.splitReasonLoop = nil
+		}
 		// Drop the Controller owner reference last so background job leases
 		// that outlive close still pin retired generations until they exit.
 		if c.sessionTemp != nil {
@@ -6335,31 +6353,36 @@ func (c *Controller) emitPlanModeReadOnlyCommandTrustResult(r PlanModeReadOnlyCo
 	}
 }
 
-// runSplitReasonLoop executes the master-slave splitreason loop for the given input
-func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTask string) error {
+// buildSplitReasonLoop lazily constructs and caches the master-slave loop on the
+// controller. The loop (with its master/slave sessions and handoff history)
+// persists across turns so conversation context is retained.
+func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
+	c.mu.Lock()
+	if c.splitReasonLoop != nil {
+		loop := c.splitReasonLoop
+		c.mu.Unlock()
+		return loop, nil
+	}
+	c.mu.Unlock()
+
 	// Resolve splitreason models from config
 	var masterModel, slaveModel string
 	if cfg := c.cfg; cfg != nil {
 		masterModel, slaveModel, _ = cfg.ResolveSplitReasonModels()
 	}
 	if masterModel == "" || slaveModel == "" {
-		return fmt.Errorf("splitreason models not configured: master_model (master) and default_model (slave) must be set")
-	}
-
-	// Get slave effort (used for future configuration)
-	if cfg := c.cfg; cfg != nil {
-		_ = strings.TrimSpace(cfg.Agent.SplitReasonSlaveEffort)
+		return nil, fmt.Errorf("splitreason models not configured: master_model (master) and default_model (slave) must be set")
 	}
 
 	// Resolve provider entries
 	masterEntry, ok := c.cfg.ResolveModel(masterModel)
 	if !ok || masterEntry == nil || !masterEntry.Configured() {
-		return fmt.Errorf("master model %q not configured", masterModel)
+		return nil, fmt.Errorf("master model %q not configured", masterModel)
 	}
 
 	slaveEntry, ok := c.cfg.ResolveModel(slaveModel)
 	if !ok || slaveEntry == nil || !slaveEntry.Configured() {
-		return fmt.Errorf("slave model %q not configured", slaveModel)
+		return nil, fmt.Errorf("slave model %q not configured", slaveModel)
 	}
 
 	// Build master provider config (inline boot.NewProviderWithProxy logic)
@@ -6386,7 +6409,7 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create master provider: %w", err)
+		return nil, fmt.Errorf("create master provider: %w", err)
 	}
 
 	// Build slave provider
@@ -6413,7 +6436,7 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create slave provider: %w", err)
+		return nil, fmt.Errorf("create slave provider: %w", err)
 	}
 
 	// Create master agent with session containing MasterSystemPrompt.
@@ -6524,7 +6547,27 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 
 	// Create loop from pre-built controllers
 	loop := NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl)
-	defer loop.Close()
+
+	c.mu.Lock()
+	if c.splitReasonLoop != nil {
+		// Another goroutine built it while we were unlocked; close ours and
+		// use the cached one.
+		loop.Close()
+		loop = c.splitReasonLoop
+	} else {
+		c.splitReasonLoop = loop
+	}
+	c.mu.Unlock()
+
+	return loop, nil
+}
+
+// runSplitReasonLoop executes the master-slave splitreason loop for the given input
+func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTask string) error {
+	loop, err := c.buildSplitReasonLoop()
+	if err != nil {
+		return err
+	}
 
 	// Emit phase event for TUI
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: starting master-slave loop"})
