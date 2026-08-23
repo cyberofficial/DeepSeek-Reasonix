@@ -562,6 +562,13 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		c.notice(c.LoopListText())
 	case "/loopdel":
 		c.notice(c.LoopDeleteText(strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))))
+	case "/splitreason":
+		c.SetSplitReasonMode(!c.SplitReasonMode())
+		if c.SplitReasonMode() {
+			c.notice("splitreason mode: ON (master-slave loop enabled)")
+		} else {
+			c.notice("splitreason mode: OFF")
+		}
 	default:
 		return false
 	}

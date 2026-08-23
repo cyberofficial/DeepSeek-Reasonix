@@ -70,6 +70,7 @@ func builtinSlashSpecs() []builtinSlashSpec {
 		{name: "/loopstatus", insert: "/loopstatus ", hint: i18n.M.CmdLoopStatus, showInHelp: true},
 		{name: "/looplist", insert: "/looplist", hint: i18n.M.CmdLoopList, showInHelp: true},
 		{name: "/loopdel", insert: "/loopdel ", hint: i18n.M.CmdLoopDel, showInHelp: true},
+		{name: "/splitreason", insert: "/splitreason", hint: i18n.M.CmdSplitReason, showInHelp: true},
 		{name: "/remember", insert: "/remember ", hint: i18n.M.CmdRemember},
 		{name: "/forget", insert: "/forget ", hint: i18n.M.CmdForget},
 		{name: "/quit", aliases: []string{"/exit"}, insert: "/quit", hint: i18n.M.CmdQuit},

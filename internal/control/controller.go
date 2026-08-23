@@ -6445,8 +6445,13 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	// strictly instructs it to NEVER call tools during planning — only output handoff
 	// JSON. During review turns, the prompt explicitly authorizes tool use for verification.
 	masterSession := agent.NewSession(MasterSystemPrompt)
-	masterAgent := agent.New(masterProv, c.mcp.registry(), masterSession, agent.Options{
-		MaxSteps:              10,
+	// Use config for max steps, default to 10 if not set
+		masterMaxSteps := c.cfg.Agent.SplitReasonMasterMaxSteps
+		if masterMaxSteps == 0 {
+			masterMaxSteps = 10
+		}
+		masterAgent := agent.New(masterProv, c.mcp.registry(), masterSession, agent.Options{
+			MaxSteps:              masterMaxSteps,
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
 		Pricing:               masterEntry.Price,
@@ -6489,8 +6494,13 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	// read-only registry (as originally done) broke write_file/edit_file/shell.
 	slaveGate := NewSharedHeadlessGate(c.policy, ToolApprovalYolo)
 	slaveSession := agent.NewSession(SlaveSystemPrompt)
-	slaveAgent := agent.New(slaveProv, c.mcp.registry(), slaveSession, agent.Options{
-		MaxSteps:              30,
+	// Use config for max steps, default to 30 if not set
+		slaveMaxSteps := c.cfg.Agent.SplitReasonSlaveMaxSteps
+		if slaveMaxSteps == 0 {
+			slaveMaxSteps = 30
+		}
+		slaveAgent := agent.New(slaveProv, c.mcp.registry(), slaveSession, agent.Options{
+			MaxSteps:              slaveMaxSteps,
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
 		Pricing:               slaveEntry.Price,

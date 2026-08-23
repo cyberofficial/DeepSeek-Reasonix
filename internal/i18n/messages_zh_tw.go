@@ -569,6 +569,7 @@ var ChineseTraditional = Messages{
 	CmdLoopList:                "在本機列出已排定的任務（不消耗模型呼叫）",
 	CmdLoopDel:                 "依 ID 刪除已排定的任務（不消耗模型呼叫）",
 	CmdLoopInstant:             "立即執行提示詞，然後按排程重複",
+	CmdSplitReason:             "切換主-從拆分推理模式（上下文蒐集 → 規劃 → 審查）",
 	CmdDiffFold:                "切換 diff 摺疊/展開",
 	ListMemorySaved:            "儲存的記憶",
 	ListMemoryArchived:         "歸檔的記憶",

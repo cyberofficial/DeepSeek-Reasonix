@@ -287,6 +287,7 @@ var English = Messages{
 	CmdLoopList:         "list scheduled tasks locally (no model call)",
 	CmdLoopDel:          "delete a scheduled task by ID (no model call)",
 	CmdLoopInstant:      "run a prompt immediately, then on a schedule",
+	CmdSplitReason:      "toggle master-slave splitreason mode (context gathering → planning → review)",
 	CmdRemember:         "save a memory note",
 	CmdForget:           "archive a saved memory",
 	CmdMcp:              "MCP servers",

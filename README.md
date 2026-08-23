@@ -54,9 +54,10 @@
 > **This repository is a fork** (`cyberofficial/DeepSeek-Reasonix`) of
 > [esengine/DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) (upstream, `main-v2`),
 > tracking upstream `main-v2` continuously. It exists to develop the
-> **scheduling / loop feature set** as a dedicated initiative — everything
+> **scheduling / loop feature set** and **SplitReason (master–slave planning)** as dedicated initiatives — everything
 > upstream offers remains available, and this fork adds:
 >
+> **Scheduling / Loop:**
 > - `/loop [interval] [prompt]` — run a prompt on a cron schedule, or as a
 >   dynamic loop the agent re-arms with `schedule_wakeup` (`--forever` for an
 >   endless loop; tasks expire after 7 days by default)
@@ -68,6 +69,14 @@
 > - mid-turn steering of scheduled prompts, per-directory task persistence
 >   (`<workspace>/.reasonix/scheduled-tasks.json`), and the `NEXT JOB`
 >   status-bar indicator
+>
+> **SplitReason (master–slave planning):**
+> - Three-phase execution: **Context Gathering → Planning → Review**
+> - Master agent explores codebase (read, grep, glob, shell, task, MCP) to accumulate reasoning before planning
+> - All accumulated reasoning flows to slave via `master_reasoning` field
+> - Slave executes with full tool access, returns structured `WorkReport`
+> - Master verifies work with tools (re-read files, run tests, git diff) before accepting
+> - Implemented in `internal/control/splitreason.go` — drive via `SplitReasonLoop`
 >
 > Full documentation: [docs/GUIDE.md](docs/GUIDE.md#slash-commands).
 >

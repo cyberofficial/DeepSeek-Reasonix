@@ -288,6 +288,7 @@ var Chinese = Messages{
 	CmdLoopList:         "本地列出已排定的任务（不消耗模型调用）",
 	CmdLoopDel:          "按 ID 删除已排定的任务（不消耗模型调用）",
 	CmdLoopInstant:      "立即运行提示词，然后按计划重复",
+	CmdSplitReason:      "切换主-从拆分推理模式（上下文收集 → 规划 → 审查）",
 	CmdRemember:         "保存一条记忆",
 	CmdForget:           "归档一条已存记忆",
 	CmdMcp:              "MCP 服务器",

@@ -1283,6 +1283,12 @@ type AgentConfig struct {
 	MasterModel string `toml:"master_model"`
 	// SplitReasonSlaveEffort is the reasoning effort for the slave model in splitreason mode.
 	SplitReasonSlaveEffort string `toml:"splitreason_slave_effort"`
+	// SplitReasonMasterMaxSteps is the max tool-call rounds for the master agent in splitreason mode.
+	// 0 = no limit; empty/unset defaults to 10.
+	SplitReasonMasterMaxSteps int `toml:"splitreason_master_max_steps"`
+	// SplitReasonSlaveMaxSteps is the max tool-call rounds for the slave agent in splitreason mode.
+	// 0 = no limit; empty/unset defaults to 30.
+	SplitReasonSlaveMaxSteps int `toml:"splitreason_slave_max_steps"`
 	// TaskCostBudget lands a task on one summary once it spends this much.
 	TaskCostBudget float64 `toml:"task_cost_budget"`
 	// TaskTimeBudgetMinutes is the same gate on wall clock. Both ship off.

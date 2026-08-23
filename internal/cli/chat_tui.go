@@ -4968,6 +4968,19 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		} else {
 			m.notice(m.ctrl.LoopDeleteText(strings.TrimSpace(strings.TrimPrefix(input, "/loopdel"))))
 		}
+	case "/splitreason":
+		m.echoLocalCommand(input)
+		if m.ctrl == nil {
+			m.notice("controller not ready")
+			return nil
+		}
+		m.splitReasonMode = !m.ctrl.SplitReasonMode()
+		m.ctrl.SetSplitReasonMode(m.splitReasonMode)
+		if m.splitReasonMode {
+			m.notice("splitreason mode: ON (master-slave loop enabled)")
+		} else {
+			m.notice("splitreason mode: OFF")
+		}
 	case "/remember":
 		m.rememberNote(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))
 	case "/quit", "/exit":
