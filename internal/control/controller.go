@@ -6536,10 +6536,10 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 		return err
 	}
 
-	// Surface the slave's answer to the user visibly.
-	if answer != "" {
-		c.sink.Emit(event.Event{Kind: event.Message, Text: answer})
-	}
+	// The slave's own RunTurn already streamed its final answer to the sink as
+	// a visible message; re-emitting it here would duplicate it. Only the phase
+	// marker is left (the answer var is validated and kept for the return path).
+	_ = answer
 
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: task completed"})
 	return nil

@@ -94,6 +94,16 @@ You MUST include "master_reasoning" with your thinking process.
 The slave will receive this as context to understand your intent.
 Your output MUST be valid JSON. No text outside the JSON object. STOP AFTER }.
 
+## REVIEW MODE — when asked to review the slave's completed work:
+Your role switches from planner to VERIFIER. Judge the work against the success
+criteria. Return ONLY ONE JSON object using one of these two shapes:
+- Work done: {"done": true, "notes": "<what you verified against each criterion>"}
+- Work incomplete/flawed: {"done": false, "handoff": {<a fresh handoff with
+  corrective or follow-up instructions, including "master_reasoning">}}
+
+Never trust the slave's self-reported outcome; decide from the report AND the
+task. No text outside the JSON object. STOP AFTER }.
+
 PATTERNS:
 
 USER: "Hello" / "Hi" / "Hey"
@@ -234,10 +244,14 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 
 		s.recordHandoff(completedHandoff)
 
-		// The master verifies the work before the loop is allowed to end.
-		// Only a handoff the master judges complete (outcome=success and a
-		// deliverable present) terminates and yields the answer.
-		done, nextInput := s.reviewHandoff(completedHandoff)
+		// The master must VERIFY the slave's work before the loop is allowed to
+		// end. It takes a real review turn over the slave's report: either it
+		// accepts (done) and the slave's answer is surfaced, or it issues
+		// corrective follow-up instructions and the loop continues.
+		done, nextInput, err := s.runMasterReview(ctx, userTask, completedHandoff)
+		if err != nil {
+			return "", fmt.Errorf("master review turn %d failed: %w", turn, err)
+		}
 		if done {
 			return findHandoffAnswer(completedHandoff), nil
 		}
@@ -278,6 +292,23 @@ func lastAssistantContent(hist []provider.Message) string {
 	return ""
 }
 
+// lastAssistantReasoning returns the thinking-block (ReasoningContent) of the
+// most recent assistant message, scanning from the end. The master's real
+// deliberation lives here — ahead of the short master_reasoning summary it
+// writes into the handoff — and is what the slave should receive as its diluted
+// context so it understands the why behind each instruction.
+func lastAssistantReasoning(hist []provider.Message) string {
+	for i := len(hist) - 1; i >= 0; i-- {
+		if hist[i].Role == provider.RoleAssistant {
+			r := strings.TrimSpace(hist[i].ReasoningContent)
+			if r != "" {
+				return r
+			}
+		}
+	}
+	return ""
+}
+
 // runMasterTurn runs a single master turn and parses the handoff JSON from the
 // the master's final assistant message in the conversation. It does NOT rely on
 // sink interception (which cannot see the executor's emitted events); it reads
@@ -286,14 +317,23 @@ func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string) (*Han
 	if err := s.masterController.RunTurn(ctx, input); err != nil {
 		return nil, err
 	}
-	text := lastAssistantContent(s.masterController.History())
+	hist := s.masterController.History()
+	text := lastAssistantContent(hist)
 	if text == "" {
 		return nil, fmt.Errorf("master did not produce a handoff")
 	}
-	if h := extractHandoffJSON(text); h != nil {
-		return h, nil
+	h := extractHandoffJSON(text)
+	if h == nil {
+		return nil, fmt.Errorf("master did not emit a valid handoff JSON")
 	}
-	return nil, fmt.Errorf("master did not emit a valid handoff JSON")
+	// The master's thinking block is the richest, most faithful description of
+	// why it chose these steps. Stash it on the handoff as diluted context for
+	// the slave; fall back to the shorter master_reasoning summary when the
+	// provider didn't emit a separate reasoning block.
+	if r := lastAssistantReasoning(hist); r != "" {
+		h.MasterReasoning = r
+	}
+	return h, nil
 }
 
 // runSlaveTurn executes the handoff using the slave controller. After the slave
@@ -397,6 +437,18 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	parts = append(parts, "\n## Instructions")
 	for _, inst := range handoff.Instructions {
 		parts = append(parts, fmt.Sprintf("\n### Step %s: %s", inst.ID, inst.Description))
+		if delegateToTool(inst.Action) == "respond" {
+			// "respond" is a marker for the slave's final natural-language
+			// answer, not a real tool. Render it as such so the slave never
+			// tries to call a nonexistent "respond" tool.
+			parts = append(parts, `This step is where you deliver the final answer. Do NOT call any tool. Compose a direct, complete answer to the user based on what you did above; that answer becomes the result.`)
+			if inst.Args != "" {
+				if msg := extractRespondMessage(inst.Args); msg != "" {
+					parts = append(parts, fmt.Sprintf("Suggested message: %s", msg))
+				}
+			}
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("Action: %s", delegateToTool(inst.Action)))
 		if inst.Args != "" {
 			parts = append(parts, fmt.Sprintf("Args: %s", inst.Args))
@@ -451,6 +503,22 @@ func delegateToTool(action string) string {
 	}
 }
 
+// extractRespondMessage pulls the optional {"message": ...} out of a respond
+// step's args JSON, so the master's suggested wording can be shown to the slave
+// without ever being mistaken for a tool call. Returns "" if absent/unparseable.
+func extractRespondMessage(args string) string {
+	if strings.TrimSpace(args) == "" {
+		return ""
+	}
+	var v struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(args), &v) != nil || strings.TrimSpace(v.Message) == "" {
+		return ""
+	}
+	return v.Message
+}
+
 // validateHandoff validates the handoff structure
 func (s *SplitReasonLoop) validateHandoff(h *Handoff) error {
 	if h.Objective == "" {
@@ -492,65 +560,134 @@ func (s *SplitReasonLoop) validateHandoff(h *Handoff) error {
 	return nil
 }
 
-// reviewHandoff reviews the completed handoff and decides next action
-func (s *SplitReasonLoop) reviewHandoff(h *Handoff) (done bool, nextInput string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// reviewInput builds the master's review-turn prompt over a completed handoff.
+// It lays out the task, the success criteria the work owed, and the slave's
+// report (outcome, observations, per-result output, errors), then asks the
+// master to judge against the criteria — not to trust the slave's self-label.
+func (s *SplitReasonLoop) reviewInput(userTask string, completed *Handoff) string {
+	var parts []string
+	parts = append(parts, "## Task")
+	parts = append(parts, userTask)
 
-	switch h.Outcome {
-	case HandoffSuccess:
-		// Verify all success criteria met
-		if s.verifySuccessCriteria(h) {
-			return true, "" // Done
+	if completed != nil {
+		if completed.Objective != "" {
+			parts = append(parts, "\n## Objective")
+			parts = append(parts, completed.Objective)
 		}
-		// Some criteria not met - continue
-		return false, s.buildMasterInput("", h)
-
-	case HandoffPartial:
-		// Partial success - master analyzes and continues with remaining
-		return false, s.buildMasterInput("", h)
-
-	case HandoffFailed:
-		// Failure - master diagnoses and retries
-		return false, s.buildMasterInput("", h)
-
-	case HandoffAmbiguous:
-		// Ambiguity - master clarifies
-		return false, s.buildMasterInput("", h)
-
-	default:
-		// Unknown outcome - treat as failed
-		return false, s.buildMasterInput("", h)
+		if len(completed.SuccessCriteria) > 0 {
+			parts = append(parts, "\n## Success Criteria")
+			for i, c := range completed.SuccessCriteria {
+				parts = append(parts, fmt.Sprintf("%d. %s", i+1, c))
+			}
+		}
+		parts = append(parts, "\n## Slave's Report")
+		parts = append(parts, "Reported outcome: "+string(completed.Outcome))
+		if completed.Observations != "" {
+			parts = append(parts, "Observations: "+completed.Observations)
+		}
+		for i, r := range completed.Results {
+			if r.Output != "" {
+				parts = append(parts, fmt.Sprintf("Result %d: %s", i+1, r.Output))
+			}
+			if r.Error != "" {
+				parts = append(parts, fmt.Sprintf("Result %d error: %s", i+1, r.Error))
+			}
+		}
+		if len(completed.Errors) > 0 {
+			parts = append(parts, "Errors: "+strings.Join(completed.Errors, "; "))
+		}
 	}
+
+	parts = append(parts, "\n## Instructions")
+	parts = append(parts, "You are reviewing work your slave just performed. Judge it against the success criteria above using the slave's report AND what you know about the task.")
+	parts = append(parts, "Return ONLY a JSON object.")
+	parts = append(parts, "If the success criteria are met, return {\"done\": true, \"notes\": \"<what was verified>\"}.")
+	parts = append(parts, "If the work is incomplete or flawed, return {\"done\": false, \"handoff\": {<a fresh handoff with corrective/follow-up instructions>}}.")
+	parts = append(parts, "Include \"master_reasoning\" in the follow-up handoff explaining the gaps you found.")
+	parts = append(parts, "No text outside the JSON object.")
+
+	return strings.Join(parts, "\n")
 }
 
-// verifySuccessCriteria reports whether a completed handoff counts as done.
-// The slave sets Outcome=Success and delivers its final answer as a single
-// result, so we accept it when the outcome is success and an answer (result
-// output, content, or observations) was actually produced — rather than
-// requiring one result per instruction.
-func (s *SplitReasonLoop) verifySuccessCriteria(h *Handoff) bool {
-	if h == nil {
-		return false
+// runMasterReview runs a real master review turn over the slave's completed
+// work. It parses the master's verdict: done (accept) or a follow-up handoff
+// (corrective work). This is what actually verifies the slave's output before
+// the loop ends — the previous code trusted the slave's Outcome=Success label,
+// which is why the host flagged the mutation as unverified/unreviewed.
+func (s *SplitReasonLoop) runMasterReview(ctx context.Context, userTask string, completed *Handoff) (done bool, nextInput string, err error) {
+	reviewIn := s.reviewInput(userTask, completed)
+
+	if err := s.masterController.RunTurn(ctx, reviewIn); err != nil {
+		return false, "", err
 	}
-	if h.Outcome != HandoffSuccess {
-		return false
+	hist := s.masterController.History()
+	text := lastAssistantContent(hist)
+	if text == "" {
+		return false, "", fmt.Errorf("master review produced no verdict")
 	}
-	// Any failed result means it isn't done.
-	for _, r := range h.Results {
-		if !r.Success {
-			return false
-		}
+
+	verdict := extractReviewVerdict(text)
+	if verdict == nil {
+		return false, "", fmt.Errorf("master review did not emit a valid verdict JSON")
 	}
-	// Must have at least one concrete deliverable (answer, content, or observation).
-	if len(h.Results) > 0 {
-		for _, r := range h.Results {
-			if strings.TrimSpace(r.Output) != "" {
-				return true
+
+	if verdict.Done {
+		return true, "", nil
+	}
+	if verdict.Handoff == nil {
+		return false, "", fmt.Errorf("master review says not done but no follow-up handoff")
+	}
+	if r := lastAssistantReasoning(hist); r != "" {
+		verdict.Handoff.MasterReasoning = r
+	}
+	// Continue with a master turn seeded by the follow-up handoff so the loop
+	// re-plans around the corrective instructions.
+	return false, s.buildMasterInput(userTask, verdict.Handoff), nil
+}
+
+// reviewVerdict is the master's structured answer to a review turn.
+type reviewVerdict struct {
+	Done    bool     `json:"done"`
+	Notes   string   `json:"notes,omitempty"`
+	Handoff *Handoff `json:"handoff,omitempty"`
+}
+
+// extractReviewVerdict parses a {done, handoff} JSON object embedded anywhere in
+// text, mirroring extractHandoffJSON's brace-scanning strategy.
+func extractReviewVerdict(text string) *reviewVerdict {
+	depth := 0
+	start := -1
+	var candidates []string
+	for i, ch := range text {
+		if ch == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		} else if ch == '}' {
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					candidates = append(candidates, text[start:i+1])
+				}
 			}
 		}
 	}
-	return strings.TrimSpace(h.Content) != "" || strings.TrimSpace(h.Observations) != ""
+	for _, c := range candidates {
+		var v reviewVerdict
+		if json.Unmarshal([]byte(c), &v) == nil && (v.Done || v.Handoff != nil) {
+			return &v
+		}
+	}
+	var whole reviewVerdict
+	if json.Unmarshal([]byte(text), &whole) != nil {
+		return nil
+	}
+	// The whole-text parse should only count if it actually carries a verdict.
+	if !whole.Done && whole.Handoff == nil {
+		return nil
+	}
+	return &whole
 }
 
 // createFailedHandoff creates a failed handoff from an error
