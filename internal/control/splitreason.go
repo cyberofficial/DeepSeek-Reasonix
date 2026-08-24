@@ -441,10 +441,13 @@ func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string, turn 
 	return h, nil
 }
 
-// extractHandoffOrContextJSON parses either a {handoff: {...}} or {context: {...}}
-// JSON object from the master's output.
+// extractHandoffOrContextJSON parses JSON from the master's output.
+// Handles three formats:
+//   1. {context: {...}} - Context Gathering phase
+//   2. {handoff: {...}} - Planning phase
+//   3. {done: true, notes: "..."} or {done: false, handoff: {...}} - Review phase
 func extractHandoffOrContextJSON(text string) *Handoff {
-	// Look for top-level JSON objects with either "handoff" or "context" keys
+	// Look for top-level JSON objects with either "handoff", "context", or "done" keys
 	depth := 0
 	start := -1
 	var candidates []string
@@ -464,9 +467,31 @@ func extractHandoffOrContextJSON(text string) *Handoff {
 		}
 	}
 	for _, c := range candidates {
+		// First check for review phase format (done + optional handoff)
+		var reviewParsed struct {
+			Done   bool   `json:"done"`
+			Notes  string `json:"notes"`
+			Handoff *Handoff `json:"handoff"`
+		}
+		if json.Unmarshal([]byte(c), &reviewParsed) == nil {
+			if reviewParsed.Done {
+				// Master accepted the work - return a completed handoff
+				return &Handoff{
+					Outcome:     HandoffSuccess,
+					Observations: reviewParsed.Notes,
+				}
+			}
+			if reviewParsed.Handoff != nil {
+				// Master rejected the work with corrective handoff
+				return &Handoff{NextHandoff: reviewParsed.Handoff}
+			}
+		}
+
+		// Check for context/handoff format (context gathering / planning phases)
 		var parsed struct {
 			Context *MasterContext `json:"context"`
 			Handoff *Handoff       `json:"handoff"`
+			NextHandoff *Handoff   `json:"next_handoff"` // some versions use this key
 		}
 		if json.Unmarshal([]byte(c), &parsed) != nil {
 			continue
@@ -476,6 +501,9 @@ func extractHandoffOrContextJSON(text string) *Handoff {
 		}
 		if parsed.Handoff != nil {
 			return &Handoff{NextHandoff: parsed.Handoff}
+		}
+		if parsed.NextHandoff != nil {
+			return &Handoff{NextHandoff: parsed.NextHandoff}
 		}
 	}
 	return nil
@@ -1046,16 +1074,18 @@ func (s *SplitReasonLoop) Close() {
 	}
 }
 
-// filteredSink wraps a sink to suppress Message events from internal loop
-// controllers while passing through Phase, Reasoning, Usage, etc. for UX and History.
+// filteredSink wraps a sink to suppress ALL output from internal loop
+// controllers (master/slave) — their streaming Text (JSON tokens), Message
+// (WorkReport), etc. are internal noise. Only the outer runSplitReasonLoop emits
+// a clean final answer via controller.sink.
 type filteredSink struct {
 	event.Sink
 }
 
 func (f *filteredSink) Emit(e event.Event) {
-	// Suppress internal Message events (master's JSON verdict, slave's WorkReport)
-	// but allow all other event kinds for proper UX rendering and history.
-	if e.Kind == event.Message {
+	// Suppress all internal controller output. The outer loop emits the final
+	// clean answer via controller.sink.
+	if e.Kind == event.Message || e.Kind == event.Text {
 		return
 	}
 	if f.Sink != nil {
