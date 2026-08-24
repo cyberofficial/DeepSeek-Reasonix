@@ -515,6 +515,8 @@ func extractHandoffOrContextJSON(text string) *Handoff {
 func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*Handoff, error) {
 	slaveInput := s.buildSlaveInput(handoff)
 
+	toolResultsBefore := countRoleToolMessages(s.slaveController.History())
+
 	runErr := s.slaveController.RunTurn(ctx, slaveInput)
 	if runErr != nil && ctx.Err() == nil {
 		return s.createFailedHandoff(handoff, runErr), nil
@@ -535,6 +537,13 @@ func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*
 		}
 	}
 
+	// A tool-requiring handoff must show tool execution: a slave that reports
+	// without calling any tool is reporting from imagination. Reject so the
+	// review sees the error instead of trusting the report.
+	if handoffRequiresTools(handoff) && countRoleToolMessages(hist) == toolResultsBefore {
+		return s.createFailedHandoff(handoff, fmt.Errorf("slave completed without calling any tools")), nil
+	}
+
 	completed := &Handoff{
 		Objective:       handoff.Objective,
 		Instructions:    handoff.Instructions,
@@ -546,6 +555,28 @@ func (s *SplitReasonLoop) runSlaveTurn(ctx context.Context, handoff *Handoff) (*
 		WorkReport:      workReport,
 	}
 	return completed, nil
+}
+
+// countRoleToolMessages counts tool-result messages in a session snapshot.
+func countRoleToolMessages(hist []provider.Message) int {
+	n := 0
+	for _, m := range hist {
+		if m.Role == provider.RoleTool {
+			n++
+		}
+	}
+	return n
+}
+
+// handoffRequiresTools reports whether any instruction needs a real tool call;
+// a respond-only handoff is just the final answer and needs none.
+func handoffRequiresTools(h *Handoff) bool {
+	for _, inst := range h.Instructions {
+		if delegateToTool(inst.Action) != "respond" {
+			return true
+		}
+	}
+	return false
 }
 
 // extractWorkReport parses the slave's output JSON to extract the work_report.
