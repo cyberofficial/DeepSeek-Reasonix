@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"reasonix/internal/config"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
@@ -25,6 +27,34 @@ func SubagentWriteAccessMessage(display []string) string {
 		return subagentWriteAccessHint
 	}
 	return subagentWriteAccessHint + " Needed directories: " + strings.Join(display, ", ")
+}
+
+// ManagedConfigTarget reports whether args name a Reasonix-managed config file
+// (e.g. the user's ~/.reasonix/config.toml) that file tools may write outside
+// the workspace roots with per-write approval. The write preflight must let
+// these targets through so confineWrite can run its managed approval; the
+// execution-time gate stays authoritative for every other path.
+func ManagedConfigTarget(args json.RawMessage, workDir string) bool {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if len(args) == 0 || json.Unmarshal(args, &p) != nil || strings.TrimSpace(p.Path) == "" {
+		return false
+	}
+	target := strings.TrimSpace(p.Path)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(workDir, target)
+	}
+	resolved, err := sandbox.ResolveAbsPath(target)
+	if err != nil {
+		resolved = filepath.Clean(target)
+	}
+	for _, managed := range config.ReasonixManagedConfigPaths() {
+		if filepath.Clean(managed) == resolved {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteAccessCheck is the host-local write-directory preflight for one tool call.
@@ -145,6 +175,12 @@ func (a *Agent) applyWriteAccess(ctx context.Context, plan *toolCallPlan) (toolO
 		}
 		abs, display, _, nerr := sandbox.NormalizeWriteDirs(declaration.Directories, a.workspaceRoot(), a.homeDir(), a.stateRoot())
 		if nerr != nil {
+			// A Reasonix-managed config file (e.g. the user config.toml) is
+			// gated by the execution-time managed approval, not by the
+			// protected-dir preflight; let the tool run so that gate decides.
+			if ManagedConfigTarget(plan.permArgs, a.workspaceRoot()) {
+				return toolOutcome{}, false
+			}
 			return writeAccessBlocked(nerr.Error()), true
 		}
 		if left := a.svc.writeRoots.Missing(abs); len(left) > 0 {

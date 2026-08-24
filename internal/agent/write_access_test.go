@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/config"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
@@ -94,5 +95,31 @@ func TestApplyWriteAccessSubagentUsesStructuredHint(t *testing.T) {
 	}
 	if !strings.Contains(out.output, "parent agent") {
 		t.Fatalf("sub-agent hint missing: %s", out.output)
+	}
+}
+
+func TestManagedConfigTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+
+	cfgPath := config.UserConfigPath()
+	absArgs, _ := json.Marshal(map[string]string{"path": cfgPath})
+	if !ManagedConfigTarget(absArgs, ".") {
+		t.Fatalf("absolute user config path must be a managed target: %s", cfgPath)
+	}
+	relArgs, _ := json.Marshal(map[string]string{"path": filepath.Base(cfgPath)})
+	if !ManagedConfigTarget(relArgs, filepath.Dir(cfgPath)) {
+		t.Fatalf("workDir-relative user config path must be a managed target")
+	}
+	otherArgs, _ := json.Marshal(map[string]string{"path": "/etc/passwd"})
+	if ManagedConfigTarget(otherArgs, ".") {
+		t.Fatal("non-config path must not be a managed target")
+	}
+	if ManagedConfigTarget(nil, ".") {
+		t.Fatal("nil args must not be a managed target")
+	}
+	badJSON := json.RawMessage(`{"path":`)
+	if ManagedConfigTarget(badJSON, ".") {
+		t.Fatal("malformed args must not be a managed target")
 	}
 }

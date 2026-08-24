@@ -45,6 +45,12 @@ func (c *Controller) CheckWriteAccess(ctx context.Context, req agent.WriteAccess
 	stateRoot := config.MemoryUserDir()
 	abs, display, broadHome, err := sandbox.NormalizeWriteDirs(req.Declaration.Directories, workDir, home, stateRoot)
 	if err != nil {
+		// A Reasonix-managed config file (e.g. the user config.toml) is gated
+		// by the execution-time managed approval, not by the protected-dir
+		// preflight; let the tool run so that approval can prompt.
+		if agent.ManagedConfigTarget(req.Args, workDir) {
+			return agent.WriteAccessDecision{Allow: true}, nil
+		}
 		return agent.WriteAccessDecision{Allow: false, Reason: err.Error()}, nil
 	}
 	if c.writeAccess.roots == nil {

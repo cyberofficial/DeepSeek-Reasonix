@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/permission"
 	"reasonix/internal/sandbox"
@@ -269,4 +270,51 @@ func canonicalWriteTestDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// TestCheckWriteAccessLetsManagedConfigThroughPreflight pins that a
+// Reasonix-managed config file (the user config.toml) is not blocked by the
+// protected-state-root preflight: execution-time confineWrite runs the managed
+// approval instead. Non-managed files in the state root stay blocked.
+func TestCheckWriteAccessLetsManagedConfigThroughPreflight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	stateRoot := config.MemoryUserDir()
+	cfgPath := config.UserConfigPath()
+
+	dir := t.TempDir()
+	set := sandbox.NewWritableRootSet([]string{dir})
+	c := New(Options{Policy: permission.New("allow", nil, nil, nil), WriteRoots: set})
+
+	args, _ := json.Marshal(map[string]string{"path": cfgPath})
+	dec, err := c.CheckWriteAccess(context.Background(), agent.WriteAccessCheck{
+		Tool:       "write_file",
+		Args:       args,
+		Expandable: true,
+		Declaration: tool.WriteAccessDeclaration{
+			Directories: []string{stateRoot},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dec.Allow {
+		t.Fatalf("managed config must pass the preflight, got: %s", dec.Reason)
+	}
+
+	envArgs, _ := json.Marshal(map[string]string{"path": filepath.Join(stateRoot, ".env")})
+	dec, err = c.CheckWriteAccess(context.Background(), agent.WriteAccessCheck{
+		Tool:       "write_file",
+		Args:       envArgs,
+		Expandable: true,
+		Declaration: tool.WriteAccessDeclaration{
+			Directories: []string{stateRoot},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Allow {
+		t.Fatal("non-managed file in the state root must stay blocked at the preflight")
+	}
 }
