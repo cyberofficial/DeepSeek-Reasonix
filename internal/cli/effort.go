@@ -110,6 +110,7 @@ func (m *chatTUI) runEffortCommand(input string) tea.Cmd {
 			ModelRef:         ref,
 			ToolApprovalMode: oldCtrl.ToolApprovalMode(),
 			PlanMode:         oldCtrl.PlanMode(),
+			SplitReasonMode:  oldCtrl.SplitReasonMode(),
 			EffortOverride:   &effort,
 		}, carried, prevPath, oldCtrl)
 		if err != nil {

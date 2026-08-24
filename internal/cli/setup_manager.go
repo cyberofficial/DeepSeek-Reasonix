@@ -861,18 +861,9 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	if err != nil {
 		return false, err
 	}
-	declarations, err := config.InspectConfigFileDeclarations(configPath)
-	if err != nil {
-		return false, err
-	}
-	fresh, err := config.LoadForEditReadOnlyStrict(configPath)
-	if err != nil {
-		return false, err
-	}
-	accessDeclared := declarations.DesktopProviderAccessDeclared
-	if err := s.replayOperations(fresh, &accessDeclared, declarations.ProviderNames); err != nil {
-		return false, err
-	}
+
+	// Check for concurrent changes by comparing the file content now with the
+	// snapshot taken at session start. If they differ, abort with a conflict.
 	current, err := readProviderSetupFileSnapshot(configPath)
 	if err != nil {
 		return false, err
@@ -880,10 +871,44 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	if !providerSetupFileSnapshotEqual(before, current) {
 		return false, &providerSetupConflictError{field: "configuration file"}
 	}
+
+	// Load fresh config from disk to capture any concurrent changes.
+	// Use LoadForEditReadOnlyStrict (not full LoadForEdit) to avoid migrations.
+	fresh, err := config.LoadForEditReadOnlyStrict(configPath)
+	if err != nil {
+		return false, err
+	}
+
+	// Merge missing sections from the session config (s.cfg) into the fresh config.
+	// LoadForEditReadOnlyStrict omits sections not touched by setup (e.g., [agent].master_model).
+	// Copy those fields from s.cfg to fresh so they're preserved.
+	mergeMissingConfigSections(fresh, s.cfg)
+
+	// Load declarations from the current file (they must match the session's
+	// original declarations if the file hasn't changed, but we re-read for safety).
+	declarations, err := config.InspectConfigFileDeclarations(configPath)
+	if err != nil {
+		return false, err
+	}
+
+	accessDeclared := declarations.DesktopProviderAccessDeclared
+	if err := s.replayOperations(fresh, &accessDeclared, declarations.ProviderNames); err != nil {
+		return false, err
+	}
+
 	if err := fresh.SaveTo(configPath); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// mergeMissingConfigSections copies config fields from src to dst that might be
+// missing in dst because LoadForEditReadOnlyStrict doesn't load all sections.
+// Currently preserves: Agent.MasterModel (used by splitreason).
+func mergeMissingConfigSections(dst, src *config.Config) {
+	if dst.Agent.MasterModel == "" && src.Agent.MasterModel != "" {
+		dst.Agent.MasterModel = src.Agent.MasterModel
+	}
 }
 
 func saveProviderSetupSession(s *providerSetupSession, configPath, envPath string) int {

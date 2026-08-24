@@ -93,6 +93,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 		authorizations:   old.SessionAuthorizations(),
 		toolApprovalMode: old.ToolApprovalMode(),
 		planMode:         old.PlanMode(),
+		splitReasonMode:  old.SplitReasonMode(),
 		goal:             old.Goal(),
 		goalRunning:      old.GoalStatus() == control.GoalStatusRunning,
 	}
@@ -175,6 +176,7 @@ type runtimeMigration struct {
 	authorizations   control.SessionAuthorizations
 	toolApprovalMode string
 	planMode         bool
+	splitReasonMode  bool
 	goal             string
 	goalRunning      bool
 }
@@ -190,6 +192,7 @@ func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration) erro
 	// Re-apply session axes a rebuild must not reset.
 	ctrl.SetToolApprovalMode(m.toolApprovalMode)
 	ctrl.SetPlanMode(m.planMode)
+	ctrl.SetSplitReasonMode(m.splitReasonMode)
 	if m.goalRunning && strings.TrimSpace(m.goal) != "" && strings.TrimSpace(ctrl.Goal()) == "" {
 		ctrl.SetGoal(m.goal)
 	}

@@ -4447,9 +4447,9 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 
 	case event.Message:
 		// The answer stream is complete — freeze reasoning + the markdown answer.
-		// Message.Text is the canonical display text (protocol markers already
-		// stripped at emission), so it replaces the raw streamed accumulation.
-		if e.Text != "" && m.pending.Len() > 0 {
+		// Message.Text is the canonical display text (protocol markers stripped at
+		// emission) and must render even when no Text streamed (splitreason).
+		if e.Text != "" {
 			m.pending.Reset()
 			m.pending.WriteString(e.Text)
 		}

@@ -6597,8 +6597,14 @@ func (c *Controller) runSplitReasonLoop(ctx context.Context, modelInput, userTas
 	}
 
 	// Emit the final answer to the user (cleanly, without internal JSON noise).
+	// Stream Text then close with Message, mirroring the ordinary answer path so
+	// frontends that buffer Text or replace-on-Message both render the answer.
 	if answer != "" {
-		c.sink.Emit(event.Event{Kind: event.Message, Text: answer})
+		display := agent.DisplayAssistantText(answer)
+		c.sink.Emit(event.Event{Kind: event.Text, Text: display})
+		c.sink.Emit(event.Event{Kind: event.Message, Text: display})
+		// Also emit as a Notice so it appears in the status area (more visible).
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "SplitReason result: " + answer})
 	}
 
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: "SplitReason: task completed"})

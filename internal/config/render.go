@@ -277,6 +277,20 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# subagent_efforts = { review = \"max\", task = \"high\" }   # per-tool/skill effort overrides\n")
 	}
+	if c.Agent.MasterModel != "" {
+		fmt.Fprintf(&b, "master_model = %q   # splitreason master (planner); slave = default_model\n", c.Agent.MasterModel)
+	} else {
+		b.WriteString("# master_model = \"deepseek-pro\"   # splitreason master (planner); slave = default_model\n")
+	}
+	if c.Agent.SplitReasonSlaveEffort != "" {
+		fmt.Fprintf(&b, "splitreason_slave_effort = %q   # reasoning effort for the splitreason slave\n", c.Agent.SplitReasonSlaveEffort)
+	}
+	if c.Agent.SplitReasonMasterMaxSteps != 0 {
+		fmt.Fprintf(&b, "splitreason_master_max_steps = %d   # max tool-call rounds for splitreason master; 0 = no limit\n", c.Agent.SplitReasonMasterMaxSteps)
+	}
+	if c.Agent.SplitReasonSlaveMaxSteps != 0 {
+		fmt.Fprintf(&b, "splitreason_slave_max_steps = %d   # max tool-call rounds for splitreason slave; 0 = no limit\n", c.Agent.SplitReasonSlaveMaxSteps)
+	}
 	if c.Agent.MaxSubagentDepth != defaults.Agent.MaxSubagentDepth {
 		fmt.Fprintf(&b, "max_subagent_depth = %d   # nested subagent delegation depth; 1 restores the old single-layer boundary\n", c.Agent.MaxSubagentDepth)
 	} else {
@@ -978,6 +992,22 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if len(c.Agent.SubagentEfforts) > 0 && !reflect.DeepEqual(c.Agent.SubagentEfforts, d.Agent.SubagentEfforts) {
 		fmt.Fprintf(&agentBuf, "subagent_efforts = %s\n", renderStringMap(c.Agent.SubagentEfforts))
+		anyAgent = true
+	}
+	if c.Agent.MasterModel != "" && c.Agent.MasterModel != d.Agent.MasterModel {
+		fmt.Fprintf(&agentBuf, "master_model = %q\n", c.Agent.MasterModel)
+		anyAgent = true
+	}
+	if c.Agent.SplitReasonSlaveEffort != "" && c.Agent.SplitReasonSlaveEffort != d.Agent.SplitReasonSlaveEffort {
+		fmt.Fprintf(&agentBuf, "splitreason_slave_effort = %q\n", c.Agent.SplitReasonSlaveEffort)
+		anyAgent = true
+	}
+	if c.Agent.SplitReasonMasterMaxSteps != d.Agent.SplitReasonMasterMaxSteps {
+		fmt.Fprintf(&agentBuf, "splitreason_master_max_steps = %d\n", c.Agent.SplitReasonMasterMaxSteps)
+		anyAgent = true
+	}
+	if c.Agent.SplitReasonSlaveMaxSteps != d.Agent.SplitReasonSlaveMaxSteps {
+		fmt.Fprintf(&agentBuf, "splitreason_slave_max_steps = %d\n", c.Agent.SplitReasonSlaveMaxSteps)
 		anyAgent = true
 	}
 	if c.Agent.MaxSubagentDepth != d.Agent.MaxSubagentDepth {

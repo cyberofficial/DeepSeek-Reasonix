@@ -225,6 +225,7 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 	}, prevPath)
 	oldCtrl.SetToolApprovalMode(control.ToolApprovalYolo)
 	oldCtrl.SetPlanMode(true)
+	oldCtrl.SetSplitReasonMode(true)
 	oldCtrl.SetGoal("ship the kernel")
 	oldCtrl.RestoreSessionAuthorizations(control.SessionAuthorizations{
 		Grants:                   []string{"bash(go test ./...)"},
@@ -267,6 +268,9 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 	}
 	if !res.Controller.PlanMode() {
 		t.Fatal("plan mode did not migrate")
+	}
+	if !res.Controller.SplitReasonMode() {
+		t.Fatal("splitreason mode did not migrate")
 	}
 	if got := res.Controller.Goal(); got != "ship the kernel" {
 		t.Fatalf("goal = %q, want migrated %q", got, "ship the kernel")

@@ -1246,6 +1246,7 @@ func chatREPL(args []string, version string) int {
 		}
 		c.EnableInteractiveApproval()
 		c.SetPlanMode(spec.PlanMode)
+		c.SetSplitReasonMode(spec.SplitReasonMode)
 		if spec.ToolApprovalMode != "" {
 			c.SetToolApprovalMode(spec.ToolApprovalMode)
 		}

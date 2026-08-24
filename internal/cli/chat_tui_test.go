@@ -4444,3 +4444,16 @@ func TestMessageEventReplacesStreamedAnswer(t *testing.T) {
 		t.Fatalf("committed transcript lost the answer text:\n%s", joined)
 	}
 }
+
+// TestMessageEventWithoutPriorTextRenders guards splitreason: the loop emits a
+// bare Message (no Text stream, since internal master/slave output is filtered),
+// and that Message alone must render the final answer.
+func TestMessageEventWithoutPriorTextRenders(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.Message, Text: "final answer"})
+
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "final answer") {
+		t.Fatalf("committed transcript lost the bare Message text:\n%s", joined)
+	}
+}

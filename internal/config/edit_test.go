@@ -1360,6 +1360,50 @@ func TestRetiredAutoGuardKeysAreIgnoredAndRemovedOnSave(t *testing.T) {
 	}
 }
 
+// TestSplitReasonAgentKeysSurviveUserSave guards the /model persist and setup
+// paths: LoadForEdit + SaveTo on a user config must not drop [agent] keys that
+// the TOML renderer historically omitted (master_model etc.), or splitreason
+// fails to initialize after any config write.
+func TestSplitReasonAgentKeysSurviveUserSave(t *testing.T) {
+	isolateUserConfigHome(t)
+	path := UserConfigPath()
+	body := `[agent]
+temperature = 0.0
+master_model = "anthropic-localhost-15000/OPUS/OPUS"
+splitreason_slave_effort = "high"
+splitreason_master_max_steps = 50
+splitreason_slave_max_steps = 100
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := LoadForEdit(path)
+	if c.Agent.MasterModel != "anthropic-localhost-15000/OPUS/OPUS" || c.Agent.SplitReasonMasterMaxSteps != 50 || c.Agent.SplitReasonSlaveMaxSteps != 100 {
+		t.Fatalf("splitreason agent keys not loaded: %+v", c.Agent)
+	}
+	if err := c.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, key := range []string{
+		`master_model = "anthropic-localhost-15000/OPUS/OPUS"`,
+		`splitreason_slave_effort = "high"`,
+		"splitreason_master_max_steps = 50",
+		"splitreason_slave_max_steps = 100",
+	} {
+		if !strings.Contains(text, key) {
+			t.Fatalf("save dropped splitreason key %q:\n%s", key, text)
+		}
+	}
+}
+
 func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
 	home := isolateUserConfigHome(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
