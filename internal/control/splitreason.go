@@ -108,7 +108,10 @@ Your role: CONTEXT GATHERING -> HIGH-LEVEL PLANNING -> VERIFICATION.
 
 ### PHASE 1: CONTEXT GATHERING (exploration)
 When you need to understand the codebase before planning, YOU HAVE FULL TOOL ACCESS.
-Use read_file, shell, grep, glob, task, MCP tools to explore the codebase.
+You MUST call tools (read_file, shell, grep, glob, task, MCP) to explore the codebase.
+Tool calls happen through the normal tool interface; they are NOT part of your JSON.
+Outputting a context handoff without calling any tools is a FAILURE: files_examined
+and commands_run must list real exploration you performed.
 After gathering context, output a "context" handoff with accumulated reasoning.
 
 OUTPUT FORMAT (strict JSON):
@@ -267,6 +270,7 @@ func NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl *Controller) *Split
 func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, error) {
 	s.phase = PhaseContextGathering
 	masterInput := s.buildMasterInput(userTask, nil)
+	noToolTurns := 0
 
 	for turn := 0; turn < s.maxTurns; turn++ {
 		select {
@@ -275,7 +279,7 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 		default:
 		}
 
-		handoff, err := s.runMasterTurn(ctx, masterInput, turn)
+		handoff, usedTools, err := s.runMasterTurn(ctx, masterInput, turn)
 		if err != nil {
 			return "", fmt.Errorf("master turn %d failed: %w", turn, err)
 		}
@@ -283,6 +287,19 @@ func (s *SplitReasonLoop) Run(ctx context.Context, userTask string) (string, err
 		// Handle context handoff (Phase 1)
 		if handoff.Context != nil {
 			s.accumulateReasoning(handoff)
+			// The master must actually explore: a context handoff that arrives
+			// without any tool calls is the model stalling. Escalate with a
+			// sharp reminder, then abort instead of looping forever.
+			if !usedTools {
+				noToolTurns++
+				if noToolTurns >= 3 {
+					return "", fmt.Errorf("master produced %d context handoffs without calling any tools; aborting", noToolTurns)
+				}
+				masterInput = s.buildMasterInput(userTask, handoff) +
+					"\n\n## TOOL USE REQUIRED\nYou did not call any tools last turn. You MUST call read_file, shell, grep, glob, or task tools to explore the codebase before outputting another context handoff."
+				continue
+			}
+			noToolTurns = 0
 			// Check if master is ready to plan
 			if handoff.Context.ReadyToPlan {
 				s.phase = PhasePlanning
@@ -421,24 +438,25 @@ func lastAssistantReasoning(hist []provider.Message) string {
 // runMasterTurn runs a single master turn and parses the handoff/context JSON
 // from the master's final assistant message. It does NOT rely on sink
 // interception; it reads the result directly from History() after RunTurn.
-func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string, turn int) (*Handoff, error) {
+func (s *SplitReasonLoop) runMasterTurn(ctx context.Context, input string, turn int) (*Handoff, bool, error) {
+	toolResultsBefore := countRoleToolMessages(s.masterController.History())
 	if err := s.masterController.RunTurn(ctx, input); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	hist := s.masterController.History()
 	text := lastAssistantContent(hist)
 	if text == "" {
-		return nil, fmt.Errorf("master did not produce output")
+		return nil, false, fmt.Errorf("master did not produce output")
 	}
 	h := extractHandoffOrContextJSON(text)
 	if h == nil {
-		return nil, fmt.Errorf("master did not emit valid JSON")
+		return nil, false, fmt.Errorf("master did not emit valid JSON")
 	}
 	// Capture reasoning for accumulation
 	if r := lastAssistantReasoning(hist); r != "" {
 		h.MasterReasoning = r
 	}
-	return h, nil
+	return h, countRoleToolMessages(hist) > toolResultsBefore, nil
 }
 
 // extractHandoffOrContextJSON parses JSON from the master's output.
@@ -729,6 +747,7 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 	switch s.phase {
 	case PhaseContextGathering:
 		parts = append(parts, "You are in CONTEXT GATHERING PHASE. Explore the codebase using tools (read_file, shell, grep, glob, task, MCP) to understand the task.")
+		parts = append(parts, "You MUST call tools before outputting any JSON. A context handoff that reports no tool calls will be rejected.")
 		parts = append(parts, "Output ONLY a JSON object with a \"context\" field containing your accumulated reasoning.")
 		parts = append(parts, "Set \"ready_to_plan\": true when you have enough context to create a plan for the slave.")
 		parts = append(parts, "Format: {\"context\": {\"reasoning_accumulated\": \"...\", \"files_examined\": [...], \"commands_run\": [...], \"key_findings\": \"...\", \"ready_to_plan\": true/false}}")
