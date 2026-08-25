@@ -106,6 +106,8 @@ type chatTUI struct {
 	splitReasonMasterTokens int
 	// splitReasonSlaveTokens accumulates slave model tokens in splitreason mode.
 	splitReasonSlaveTokens int
+	// splitReasonPhase tracks the current splitreason phase (context_gathering, planning, slave_execution, review)
+	splitReasonPhase string
 	// showTurnUsage controls whether completed per-request token/cost receipts are
 	// retained in transcript scrollback. Usage accounting remains active either way.
 	showTurnUsage bool
@@ -4534,7 +4536,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			}
 		}
 		if m.showTurnUsage {
-			if line := renderTurnReceipt(e.Usage, e.Pricing, e.CacheDiagnostics); line != "" {
+			if line := renderTurnReceipt(e.Usage, e.Pricing, e.CacheDiagnostics, e.Source); line != "" {
 				m.finalizeStreamed()
 				m.commitSpacer()
 				m.commitTranscriptSource(transcriptSource{kind: transcriptSourceTurnReceipt, raw: line})
@@ -4633,6 +4635,19 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.finalizeStreamed()
 		// SplitReason phases get special formatting for TUI
 		if strings.HasPrefix(e.Text, "SplitReason:") {
+			// Track the current splitreason phase for status display
+			switch {
+			case strings.Contains(e.Text, "starting master-slave loop"):
+				m.splitReasonPhase = "Context"
+			case strings.Contains(e.Text, "master turn"):
+				m.splitReasonPhase = "Master"
+			case strings.Contains(e.Text, "slave execution"):
+				m.splitReasonPhase = "Slave"
+			case strings.Contains(e.Text, "review"):
+				m.splitReasonPhase = "Review"
+			case strings.Contains(e.Text, "task completed"):
+				m.splitReasonPhase = ""
+			}
 			m.commitLine(fmt.Sprintf("🔀 %s", e.Text))
 		} else {
 			m.commitLine(fmt.Sprintf("[%s]", e.Text))
@@ -4980,6 +4995,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			m.notice("splitreason mode: ON (master-slave loop enabled)")
 		} else {
 			m.notice("splitreason mode: OFF")
+			m.splitReasonPhase = ""
+			m.splitReasonMasterTokens = 0
+			m.splitReasonSlaveTokens = 0
 		}
 	case "/remember":
 		m.rememberNote(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))

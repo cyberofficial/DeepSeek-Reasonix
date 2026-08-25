@@ -492,6 +492,8 @@ const (
 	UsageSourceCapabilityRouter = "capability-router"
 	UsageSourceRecoveryReviewer = "recovery-reviewer"
 	UsageSourceGoalEvaluator    = "goal-evaluator"
+	UsageSourceSplitReasonMaster = "splitreason_master"
+	UsageSourceSplitReasonSlave  = "splitreason_slave"
 )
 
 // Event is one increment in a turn's event stream. Read the field(s) documented

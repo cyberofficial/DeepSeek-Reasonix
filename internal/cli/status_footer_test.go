@@ -31,7 +31,7 @@ func TestTurnReceiptKeepsCompletePerTurnBreakdown(t *testing.T) {
 		ReasoningTokens:  24,
 	}
 	p := &provider.Pricing{CacheHit: .1, Input: 1, Output: 2}
-	got := renderTurnReceipt(u, p, nil)
+	got := renderTurnReceipt(u, p, nil, "")
 	for _, want := range []string{
 		"本轮", "14.0K tok", "in 13.6K", "cached 13.2K", "new 441",
 		"out 392", "reasoning 24", "¥0.0025",
@@ -54,7 +54,7 @@ func TestTurnReceiptFallsBackToDerivedFreshTokensAndWrapsCleanly(t *testing.T) {
 
 	got := renderTurnReceipt(&provider.Usage{
 		PromptTokens: 1_200, CompletionTokens: 80, TotalTokens: 1_280, CacheHitTokens: 900,
-	}, nil, &event.CacheDiagnostics{PrefixChanged: true, PrefixChangeReasons: []string{"tools"}})
+	}, nil, &event.CacheDiagnostics{PrefixChanged: true, PrefixChangeReasons: []string{"tools"}}, "")
 	plain := ansi.Strip(got)
 	for _, want := range []string{"TURN", "cached 900", "new 300", "cache prefix changed: tools"} {
 		if !strings.Contains(plain, want) {
@@ -69,10 +69,10 @@ func TestTurnReceiptFallsBackToDerivedFreshTokensAndWrapsCleanly(t *testing.T) {
 }
 
 func TestTurnReceiptIgnoresEmptyUsage(t *testing.T) {
-	if got := renderTurnReceipt(nil, nil, nil); got != "" {
+	if got := renderTurnReceipt(nil, nil, nil, ""); got != "" {
 		t.Fatalf("nil usage receipt = %q, want empty", got)
 	}
-	if got := renderTurnReceipt(&provider.Usage{}, nil, nil); got != "" {
+	if got := renderTurnReceipt(&provider.Usage{}, nil, nil, ""); got != "" {
 		t.Fatalf("empty usage receipt = %q, want empty", got)
 	}
 }
@@ -84,7 +84,7 @@ func TestTurnReceiptMarksEstimatedUsage(t *testing.T) {
 	configureCLITheme("dark")
 	i18n.DetectLanguage("en")
 
-	got := renderTurnReceipt(&provider.Usage{TotalTokens: 1_024, Estimated: true}, nil, nil)
+	got := renderTurnReceipt(&provider.Usage{TotalTokens: 1_024, Estimated: true}, nil, nil, "")
 	for _, want := range []string{"≈1.0K tok", "estimated"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("estimated turn receipt %q missing %q", got, want)
@@ -129,7 +129,7 @@ func TestTurnReceiptAdaptsContrastAcrossThemes(t *testing.T) {
 			configureCLITheme(tt.mode)
 			receipt := renderTurnReceipt(&provider.Usage{
 				PromptTokens: 900, CompletionTokens: 100, TotalTokens: 1_000,
-			}, nil, nil)
+			}, nil, nil, "")
 			band := renderTurnReceiptBand(receipt, 80)
 			for _, want := range []string{tt.borderSGR + "─", tt.labelSGR + "TURN", tt.valueSGR + "1.0K tok"} {
 				if !strings.Contains(band, want) {

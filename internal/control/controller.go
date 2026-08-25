@@ -6440,10 +6440,10 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	}
 
 	// Create master agent with session containing MasterSystemPrompt.
-	// Give it FULL tools (not empty) so it can VERIFY the slave's work during
-	// review turns (read_file, shell, grep, glob, MCP, etc.). The MasterSystemPrompt
-	// strictly instructs it to NEVER call tools during planning — only output handoff
-	// JSON. During review turns, the prompt explicitly authorizes tool use for verification.
+	// The master is READ-ONLY in ALL phases — it explores (Phase 1), plans (Phase 2),
+	// and verifies (Phase 3) using only read_file, grep, glob, shell (for git diff/tests),
+	// and task sub-agents. The slave does ALL writing. The MasterSystemPrompt explicitly
+	// forbids the master from editing files in any phase.
 	masterSession := agent.NewSession(MasterSystemPrompt)
 	// Use config for max steps, default to 50 if not set
 		masterMaxSteps := c.cfg.Agent.SplitReasonMasterMaxSteps
@@ -6455,11 +6455,11 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
 		Pricing:               masterEntry.Price,
-		UsageSource:           event.UsageSourceExecutor,
+		UsageSource:           event.UsageSourceSplitReasonMaster,
 		ModelRef:              masterModel,
 		RequireVisibleFinal:   true,
 		Gate:                  c.subagentGate,
-		ReadOnlyExecution:     false,
+		ReadOnlyExecution:     true,
 		PlannerMCPExecution:   false,
 		ContextWindow:         masterEntry.ContextWindow,
 		CompactRatio:          c.cfg.Agent.CompactRatio,
@@ -6470,10 +6470,10 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 		Jobs:                  c.jobs,
 		Scheduler:             c.scheduler,
 		WriteScheduler:        nil,
-		WriteWorkspaceRoot:    c.workspaceRoot,
-		WriteRoots:            c.writeAccess.roots,
-		WorkspaceLease:        c.workspaceLease,
-		MutationObserver:      c.mutationObserver,
+		WriteWorkspaceRoot:    "",
+		WriteRoots:            nil,
+		WorkspaceLease:        nil,
+		MutationObserver:      nil,
 		SubagentDepth:         0,
 		MaxSubagentDepth:      c.cfg.Agent.MaxSubagentDepth,
 		Extensions:            c.extensions,
@@ -6504,7 +6504,7 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 		Temperature:           0.0,
 		TaskBudget:            agent.TaskBudget{},
 		Pricing:               slaveEntry.Price,
-		UsageSource:           event.UsageSourceExecutor,
+		UsageSource:           event.UsageSourceSplitReasonSlave,
 		ModelRef:              slaveModel,
 		RequireVisibleFinal:   true,
 		Gate:                  slaveGate,

@@ -44,7 +44,7 @@ func footerMetric(label, value string) string {
 // the assistant response. Unlike the persistent footer, this is historical
 // message metadata: it stays in transcript scrollback and deliberately uses a
 // quieter palette than runtime/session state.
-func renderTurnReceipt(u *provider.Usage, p *provider.Pricing, d *event.CacheDiagnostics) string {
+func renderTurnReceipt(u *provider.Usage, p *provider.Pricing, d *event.CacheDiagnostics, source string) string {
 	if u == nil || u.TotalTokens == 0 {
 		return ""
 	}
@@ -53,6 +53,12 @@ func renderTurnReceipt(u *provider.Usage, p *provider.Pricing, d *event.CacheDia
 	if u.Estimated {
 		total = "≈" + total
 	}
+
+	// Add source indicator for splitreason (master/slave)
+	if source != "" {
+		total = total + " " + source
+	}
+
 	groups := []string{total}
 	if u.PromptTokens > 0 {
 		cached := u.CacheHitTokens
@@ -287,7 +293,7 @@ func (m chatTUI) statusTelemetryGroups() []string {
 		if value, show := m.nextJobStatus(); show {
 			data = append(data, footerMetric(i18n.M.ChatStatusNextJobLabel, footerInfo(value)))
 		}
-		// SplitReason token breakdown
+		// SplitReason token breakdown + current phase
 		if m.splitReasonMode {
 			if m.splitReasonMasterTokens > 0 || m.splitReasonSlaveTokens > 0 {
 				parts := []string{}
@@ -300,6 +306,10 @@ func (m chatTUI) statusTelemetryGroups() []string {
 				if len(parts) > 0 {
 					data = append(data, footerMetric(i18n.M.ChatStatusSplitReasonHint, footerInfo(strings.Join(parts, " "))))
 				}
+			}
+			// Show current phase if available
+			if m.splitReasonPhase != "" {
+				data = append(data, footerMetric("split", footerInfo(m.splitReasonPhase)))
 			}
 		}
 	}
