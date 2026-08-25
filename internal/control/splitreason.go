@@ -96,7 +96,9 @@ const (
 const MasterSystemPrompt = `# MASTER SYSTEM PROMPT (SPLITREASON ARCHITECT)
 
 You are the **Architect** in a master-slave execution loop.
-Your role: CONTEXT GATHERING -> HIGH-LEVEL PLANNING -> VERIFICATION.
+Your role: THINK, DELEGATE, VERIFY. You are the BOSS: slaves do the grunt work,
+you distill their findings into decisions. Do NOT do deep exploration or file
+edits yourself — spawn slaves for that. Light reads of small files are fine.
 
 ## CRITICAL OUTPUT RULES - VIOLATION = FAILURE:
 - NO TEXT BEFORE { OR AFTER } - NOT EVEN A NEWLINE
@@ -106,13 +108,16 @@ Your role: CONTEXT GATHERING -> HIGH-LEVEL PLANNING -> VERIFICATION.
 
 ## THREE PHASES (determined by the user message you receive):
 
-### PHASE 1: CONTEXT GATHERING (exploration)
-When you need to understand the codebase before planning, YOU HAVE FULL TOOL ACCESS.
-You MUST call tools (read_file, shell, grep, glob, task, MCP) to explore the codebase.
-Tool calls happen through the normal tool interface; they are NOT part of your JSON.
-Outputting a context handoff without calling any tools is a FAILURE: files_examined
-and commands_run must list real exploration you performed.
-After gathering context, output a "context" handoff with accumulated reasoning.
+### PHASE 1: CONTEXT GATHERING (exploration via parallel slaves)
+You are the boss gathering intelligence. Spawn 1-10 PARALLEL sub-agents with
+the task tool, choosing the count by task size: one per area (e.g. git
+history/commits, docs, config and memory files, code structure). Have them
+search, read, and summarize; you aggregate their findings. Tool calls happen
+through the normal tool interface; they are NOT part of your JSON. Reading one
+small file yourself is fine, but deep searching, large diffs, and broad scans
+are slave work — NEVER do them yourself. Outputting a context handoff without
+calling any tools is a FAILURE: files_examined and commands_run must list real
+exploration that was performed.
 
 OUTPUT FORMAT (strict JSON):
 {
@@ -127,7 +132,10 @@ OUTPUT FORMAT (strict JSON):
 
 ### PHASE 2: PLANNING (when ready_to_plan=true or user message says "## Plan for Slave")
 NOW produce the handoff for the slave. Include ALL accumulated reasoning as master_reasoning.
-YOU HAVE FULL TOOL ACCESS during planning too if needed.
+The slave executes the work; you never write files yourself.
+Give every independent file edit its OWN instruction (no depends_on) so the
+slave can run them in parallel; set depends_on only for real ordering
+dependencies (read-before-edit, or edits to the same file).
 
 OUTPUT FORMAT (strict JSON):
 {
@@ -143,9 +151,10 @@ OUTPUT FORMAT (strict JSON):
 }
 
 ### PHASE 3: REVIEW (when user message says "## Your Verification Tools")
-You are reviewing the slave's completed work. You have FULL TOOL ACCESS.
-Use read_file, shell, grep, glob, task, MCP tools to VERIFY the slave's work.
-Check: re-read files, run tests, git diff, etc. DO NOT TRUST the report blindly.
+You are reviewing the slave's completed work. Verify with READ-ONLY tools
+(read_file, grep, glob, git diff via shell, task sub-agents for parallel checks).
+NEVER edit files yourself. If the work is incomplete or flawed, ALWAYS return a
+corrective handoff for the slave instead of fixing anything yourself.
 
 OUTPUT FORMAT (strict JSON) - return ONE of these two shapes:
 - Work done: {"done": true, "notes": "<what you verified against each criterion>"}
@@ -192,6 +201,19 @@ and context (including the Architect's reasoning). For EACH instruction:
 3. RECORD the result (file content, command output, error)
 4. REPEAT for all instructions
 5. ONLY THEN output the WorkReport JSON with ALL results
+
+## Parallelism and collision safety
+- Instructions that touch DIFFERENT files are independent: run them as
+  PARALLEL task sub-agents (delegate_task), each with "write_paths" listing
+  exactly the files that sub-agent will edit. The runtime then runs
+  non-overlapping writers concurrently and SERIALIZES writers that touch the
+  same file, so parallel slaves never corrupt each other's work.
+- Instructions with a "Depends on" relationship, or that edit the SAME file,
+  must run in sequence — never in parallel.
+- ALWAYS re-read a file immediately before editing it: another slave may have
+  changed it since you first read it. Never trust a cached read for an edit.
+- Aggregate every sub-agent's outcome into your WorkReport (files edited,
+  commands run, errors) so the master sees the full picture.
 
 ## Tools Available
 - delegate_read_file -> call read_file tool
@@ -746,8 +768,8 @@ func (s *SplitReasonLoop) buildMasterInput(userTask string, prevHandoff *Handoff
 	parts = append(parts, "\n## Instructions")
 	switch s.phase {
 	case PhaseContextGathering:
-		parts = append(parts, "You are in CONTEXT GATHERING PHASE. Explore the codebase using tools (read_file, shell, grep, glob, task, MCP) to understand the task.")
-		parts = append(parts, "You MUST call tools before outputting any JSON. A context handoff that reports no tool calls will be rejected.")
+		parts = append(parts, "You are in CONTEXT GATHERING PHASE. Spawn 1-10 PARALLEL task sub-agents (choose by task size), each exploring one area (commits, docs, config, code structure), and aggregate their findings.")
+		parts = append(parts, "Do NOT do deep exploration yourself — that is slave work. You MUST call tools (at least the task tool) before outputting any JSON; a context handoff with no tool calls will be rejected.")
 		parts = append(parts, "Output ONLY a JSON object with a \"context\" field containing your accumulated reasoning.")
 		parts = append(parts, "Set \"ready_to_plan\": true when you have enough context to create a plan for the slave.")
 		parts = append(parts, "Format: {\"context\": {\"reasoning_accumulated\": \"...\", \"files_examined\": [...], \"commands_run\": [...], \"key_findings\": \"...\", \"ready_to_plan\": true/false}}")
@@ -816,6 +838,10 @@ func (s *SplitReasonLoop) buildSlaveInput(handoff *Handoff) string {
 	for i, c := range handoff.SuccessCriteria {
 		parts = append(parts, fmt.Sprintf("%d. %s", i+1, c))
 	}
+
+	parts = append(parts, "\n## Parallelism and collision safety")
+	parts = append(parts, "Steps that touch DIFFERENT files are independent: run them as PARALLEL task sub-agents, each with \"write_paths\" listing exactly the files it will edit (the runtime serializes overlapping writers automatically). Steps with a 'Depends on' relationship, or that edit the SAME file, run in sequence.")
+	parts = append(parts, "ALWAYS re-read a file immediately before editing it — another slave may have changed it since your first read.")
 
 	parts = append(parts, "\n## Allowed Tools")
 	parts = append(parts, strings.Join(handoff.AllowedTools, ", "))
@@ -975,8 +1001,8 @@ func (s *SplitReasonLoop) reviewInput(userTask string, completed *Handoff) strin
 	}
 
 	parts = append(parts, "\n## Your Verification Tools")
-	parts = append(parts, "You have FULL TOOL ACCESS (read_file, write_file, edit_file, shell, grep, glob, task, MCP tools).")
-	parts = append(parts, "USE THEM to verify the slave's work: re-read files, run commands, check git diff, etc.")
+	parts = append(parts, "Verify with READ-ONLY tools (read_file, grep, glob, git diff via shell, task sub-agents for parallel checks).")
+	parts = append(parts, "NEVER edit files yourself. If the work is incomplete, return a corrective handoff for the slave.")
 	parts = append(parts, "Do NOT trust the slave's report blindly -- VERIFY.")
 
 	parts = append(parts, "\n## Instructions")

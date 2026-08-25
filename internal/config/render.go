@@ -291,6 +291,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	if c.Agent.SplitReasonSlaveMaxSteps != 0 {
 		fmt.Fprintf(&b, "splitreason_slave_max_steps = %d   # max tool-call rounds for splitreason slave; 0 = no limit\n", c.Agent.SplitReasonSlaveMaxSteps)
 	}
+	if c.Agent.SplitReasonMaxSlaves != 0 {
+		fmt.Fprintf(&b, "splitreason_max_slaves = %d   # parallel task sub-agents the splitreason master may run\n", c.Agent.SplitReasonMaxSlaves)
+	}
 	if c.Agent.MaxSubagentDepth != defaults.Agent.MaxSubagentDepth {
 		fmt.Fprintf(&b, "max_subagent_depth = %d   # nested subagent delegation depth; 1 restores the old single-layer boundary\n", c.Agent.MaxSubagentDepth)
 	} else {
@@ -1008,6 +1011,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if c.Agent.SplitReasonSlaveMaxSteps != d.Agent.SplitReasonSlaveMaxSteps {
 		fmt.Fprintf(&agentBuf, "splitreason_slave_max_steps = %d\n", c.Agent.SplitReasonSlaveMaxSteps)
+		anyAgent = true
+	}
+	if c.Agent.SplitReasonMaxSlaves != d.Agent.SplitReasonMaxSlaves {
+		fmt.Fprintf(&agentBuf, "splitreason_max_slaves = %d\n", c.Agent.SplitReasonMaxSlaves)
 		anyAgent = true
 	}
 	if c.Agent.MaxSubagentDepth != d.Agent.MaxSubagentDepth {

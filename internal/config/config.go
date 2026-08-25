@@ -1289,6 +1289,9 @@ type AgentConfig struct {
 	// SplitReasonSlaveMaxSteps is the max tool-call rounds for the slave agent in splitreason mode.
 	// 0 = no limit; empty/unset defaults to 30.
 	SplitReasonSlaveMaxSteps int `toml:"splitreason_slave_max_steps"`
+	// SplitReasonMaxSlaves caps how many parallel task sub-agents the splitreason
+	// master may run at once. Empty/unset defaults to 10; clamped to 1..32.
+	SplitReasonMaxSlaves int `toml:"splitreason_max_slaves"`
 	// TaskCostBudget lands a task on one summary once it spends this much.
 	TaskCostBudget float64 `toml:"task_cost_budget"`
 	// TaskTimeBudgetMinutes is the same gate on wall clock. Both ship off.

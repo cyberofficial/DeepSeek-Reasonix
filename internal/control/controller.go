@@ -6565,6 +6565,20 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	// Create loop from pre-built controllers
 	loop := NewSplitReasonLoopFromControllers(masterCtrl, slaveCtrl)
 
+	// The master delegates grunt work to parallel task sub-agents; give the
+	// session's shared task tool a splitreason-sized slot pool so the master
+	// can run up to splitreason_max_slaves (default 10) slaves at once. The
+	// swap is one-time per session and only happens while splitreason is on.
+	maxSlaves := c.cfg.Agent.SplitReasonMaxSlaves
+	if maxSlaves <= 0 {
+		maxSlaves = 10
+	}
+	if tt, ok := c.mcp.registry().Get("task"); ok {
+		if taskTool, ok := tt.(*agent.TaskTool); ok {
+			taskTool.WithScheduler(agent.NewSubagentScheduler(maxSlaves, agent.DefaultMaxParallelWriters))
+		}
+	}
+
 	c.mu.Lock()
 	if c.splitReasonLoop != nil {
 		// Another goroutine built it while we were unlocked; close ours and
