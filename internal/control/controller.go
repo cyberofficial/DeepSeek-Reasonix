@@ -6440,10 +6440,10 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	}
 
 	// Create master agent with session containing MasterSystemPrompt.
-	// The master is READ-ONLY in ALL phases — it explores (Phase 1), plans (Phase 2),
-	// and verifies (Phase 3) using only read_file, grep, glob, shell (for git diff/tests),
-	// and task sub-agents. The slave does ALL writing. The MasterSystemPrompt explicitly
-	// forbids the master from editing files in any phase.
+	// The master is write-protected (not fully read-only): it may explore with read_file,
+	// grep, glob, bash, web/browser MCP, and task sub-agents — but any workspace write
+	// (write_file/edit_file/multi_edit/move_file) is denied so the slave does ALL writing.
+	// The MasterSystemPrompt instructs it never to edit files; noWriteGate enforces it.
 	masterSession := agent.NewSession(MasterSystemPrompt)
 	// Use config for max steps, default to 50 if not set
 		masterMaxSteps := c.cfg.Agent.SplitReasonMasterMaxSteps
@@ -6459,8 +6459,8 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 		ModelRef:              masterModel,
 		RequireVisibleFinal:   true,
 		Gate:                  c.subagentGate,
-		ReadOnlyExecution:     true,
-		PlannerMCPExecution:   false,
+		PlannerMCPExecution:   true,
+		ReadOnlyExecution:     false,
 		ContextWindow:         masterEntry.ContextWindow,
 		CompactRatio:          c.cfg.Agent.CompactRatio,
 		RecentKeep:            c.cfg.Agent.RecentKeep,
@@ -6482,6 +6482,8 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 		RequireReviewReportKind: "",
 		ReasoningLanguage:     c.reasoningLanguage,
 		ResponseLanguage:      c.responseLanguage,
+		PlannerMCPExecution:   true,
+		ReadOnlyExecution:     false,
 		PlanModeReadOnlyCommands: c.cfg.Agent.PlanModeReadOnlyCommands,
 		RecoveryGate:          c.recoveryGate,
 		RecoveryAgentID:       "",
@@ -6576,6 +6578,9 @@ func (c *Controller) buildSplitReasonLoop() (*SplitReasonLoop, error) {
 	if tt, ok := c.mcp.registry().Get("task"); ok {
 		if taskTool, ok := tt.(*agent.TaskTool); ok {
 			taskTool.WithScheduler(agent.NewSubagentScheduler(maxSlaves, agent.DefaultMaxParallelWriters))
+			if c.capabilityRuntime != nil {
+				taskTool.WithCapabilityRuntime(c.capabilityRuntime)
+			}
 		}
 	}
 
